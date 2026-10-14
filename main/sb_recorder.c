@@ -20,7 +20,7 @@ static const char *TAG = "sb_recorder";
 
 #define VAD_FRAME_SAMPLES 320                                   // 20 ms @16k
 #define VAD_FRAME_BYTES   (VAD_FRAME_SAMPLES * sizeof(int16_t))
-#define OPUS_FRAMES_PER_BLOCK (SB_OPUS_FRAME_SAMPLES / VAD_FRAME_SAMPLES)  // 3
+#define FRAMES_PER_BLOCK (SB_AUDIO_FRAME_SAMPLES / VAD_FRAME_SAMPLES)  // 3 个 20ms 帧
 // 静态栈:录音任务要调 bsp_audio_init()/esp_codec_dev_open 并跑 libopus 编码。
 // 串口实测 24 KB 仍会在编码循环里触发 "Stack protection fault",这里加到 32 KB,
 // 并在首个编码帧后打印高水位,便于按真实占用再收敛(不要继续靠猜)。
@@ -38,7 +38,7 @@ static void recorder_task(void *arg)
 {
     (void)arg;
     static int16_t pcm[VAD_FRAME_SAMPLES];
-    static int16_t opus_pcm[SB_OPUS_FRAME_SAMPLES];
+    static int16_t codec_pcm[SB_AUDIO_FRAME_SAMPLES];
     static uint8_t enc_out[SB_ADPCM_MAX_BYTES];
     sb_adpcm_enc_t enc;
     sb_vad_t vad;
@@ -53,7 +53,7 @@ static void recorder_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    if (bsp_audio_set_format(SB_OPUS_RATE, 16, 1) != ESP_OK) {
+    if (bsp_audio_set_format(SB_AUDIO_RATE, 16, 1) != ESP_OK) {
         ESP_LOGE(TAG, "音频格式设置失败");
         g_sb_diag.rec_err = SB_REC_ERR_AUDIO_FORMAT;
         s_running = false;
@@ -83,13 +83,13 @@ static void recorder_task(void *arg)
             fill = 0;
             continue;
         }
-        memcpy(&opus_pcm[fill * VAD_FRAME_SAMPLES], pcm, VAD_FRAME_BYTES);
+        memcpy(&codec_pcm[fill * VAD_FRAME_SAMPLES], pcm, VAD_FRAME_BYTES);
         fill++;
-        if (fill < OPUS_FRAMES_PER_BLOCK) {
+        if (fill < FRAMES_PER_BLOCK) {
             continue;
         }
         fill = 0;
-        const size_t n = sb_adpcm_encode_block(&enc, opus_pcm, SB_AUDIO_FRAME_SAMPLES,
+        const size_t n = sb_adpcm_encode_block(&enc, codec_pcm, SB_AUDIO_FRAME_SAMPLES,
                                                enc_out, sizeof(enc_out));
         if (n > 0) {
             sb_uplink_push_audio(enc_out, n);
