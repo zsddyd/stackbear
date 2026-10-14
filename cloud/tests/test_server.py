@@ -82,9 +82,9 @@ async def _run() -> None:
             check(meta["frames"] == 5, f"meta frames == 5, got {meta['frames']}")
             check(meta["audio_ms"] == 300, f"meta audio_ms == 300, got {meta['audio_ms']}")
             check(meta["first_seq"] == 1 and meta["last_seq"] == 5, "seq range")
-            blob = (sdir / "audio.opus").read_bytes()
+            blob = (sdir / "audio.adpcm").read_bytes()
             # 每个包 2 字节长度前缀 + 20 字节负载
-            check(len(blob) == 5 * 22, f"audio.opus length, got {len(blob)}")
+            check(len(blob) == 5 * 22, f"audio.adpcm length, got {len(blob)}")
             check(blob[:2] == b"\x00\x14", "first length prefix == 20")
 
 
