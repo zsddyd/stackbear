@@ -1,12 +1,13 @@
 // main/main.c —— stackbear「全天候录音卡」应用入口。
 //
 // 与基线 demo 的差别:这里没有测试菜单,启动即进入自研界面(Home / Status / Setup),
-// 联网后自动开始"常开 VAD 录音 -> Opus 编码 -> 私有协议上传 ECS"。
+// 联网后自动开始"常开 VAD 录音 -> IMA-ADPCM 编码 -> 私有协议上传 ECS"。
 //
 // 按键语义:
-//   OK   短按 : 暂停 / 继续上传(常开录音的开关)
-//   OK   长按 : 进入配网模式;配网中再长按 = 取消并返回
-//   UP / DOWN : 在 Home 与 Status 页之间切换
+//   UP   双击 / 长按 : 开始 / 停止录音(会话级)
+//   OK   短按        : 软暂停 / 继续(不改会话)
+//   OK   长按        : 进入配网模式;配网中再长按 = 取消并返回
+//   UP / DOWN 短按   : 在 Home 与 Status 页之间切换
 #include <string.h>
 
 #include "bsp_audio.h"
@@ -54,6 +55,7 @@ static void ui_show_locked(sb_screen_t screen)
 
 static void enter_setup_locked(void);
 static void exit_setup_locked(void);
+static void toggle_recording(void);
 
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 {
@@ -77,15 +79,33 @@ static void handle_input(const input_event_t *in)
         enter_setup_locked();
         return;
     }
+    // UP 双击或长按 = 开始 / 停止录音(会话级:停止会结束当前会话并封文件)。
+    if (in->btn == BSP_BTN_UP &&
+        (in->event == BSP_BTN_DOUBLE || in->event == BSP_BTN_LONG)) {
+        toggle_recording();
+        return;
+    }
     if (in->event != BSP_BTN_CLICK) {
         return;
     }
     if (in->btn == BSP_BTN_OK) {
-        const bool paused = sb_recorder_paused();
-        sb_recorder_set_paused(!paused);
-        ESP_LOGI(TAG, "上传%s", !paused ? "已暂停" : "已恢复");
+        // OK 单击 = 软暂停 / 继续(保持会话不断)。
+        sb_recorder_set_paused(!sb_recorder_paused());
     } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
         ui_show_locked(s_screen == SB_SCREEN_HOME ? SB_SCREEN_STATS : SB_SCREEN_HOME);
+    }
+}
+
+static void toggle_recording(void)
+{
+    if (sb_recorder_paused()) {
+        sb_recorder_set_paused(false);
+        sb_uplink_begin_session();
+        ESP_LOGI(TAG, "开始录音");
+    } else {
+        sb_recorder_set_paused(true);
+        sb_uplink_end_session();
+        ESP_LOGI(TAG, "停止录音");
     }
 }
 
@@ -182,6 +202,10 @@ void app_main(void)
         ESP_LOGE(TAG, "配置初始化失败");
     }
     bsp_i2c_init();
+    // 电量计是软依赖:读不到(CW2017 不应答)只让界面显示 "--%",不阻塞启动。
+    if (bsp_battery_init() != ESP_OK) {
+        ESP_LOGW(TAG, "电量计初始化失败,界面将显示 --%%");
+    }
 
     if (bsp_display_init() != ESP_OK || bsp_lvgl_init() == NULL) {
         ESP_LOGE(TAG, "显示/LVGL 初始化失败,应用无法继续");

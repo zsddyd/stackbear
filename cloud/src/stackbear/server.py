@@ -9,7 +9,8 @@
 落盘布局::
 
     data/<dev>/<YYYYmmdd-HHMMSS>/
-        audio.opus   每帧前加 2 字节大端长度前缀的 Opus 包日志(可无损重封装)
+        audio.adpcm  每块前加 2 字节大端长度前缀的 IMA-ADPCM(4bit)块流
+                     (用 tools/adpcm_to_wav.py 可解码成 WAV 试听)
         meta.json    设备 id、编码、采样率、帧长、帧数、音频时长、起止时间等
 
 之所以用"长度前缀帧日志"而不是直接字节拼接:后续接 ASR 时需要逐包边界,
@@ -64,10 +65,13 @@ class Session:
         # 同一秒内重连也要能区分,加短随机后缀。
         self.dir = DATA / dev / f"{stamp}-{uuid.uuid4().hex[:4]}"
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.audio_path = self.dir / "audio.opus"
+        # 注意:固件端已经用 IMA-ADPCM 取代 Opus,文件名必须叫 adpcm,
+        # 否则会被误当成 Opus 拿去播放(普通播放器打不开)。
+        self.audio_path = self.dir / "audio.adpcm"
         self.meta: dict = {
             "dev": dev,
-            "codec": "opus",
+            "codec": "adpcm",
+            "container": "len-prefixed-blocks",
             "sample_rate": 16000,
             "channels": 1,
             "frame_ms": 60,

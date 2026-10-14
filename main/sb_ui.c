@@ -27,6 +27,9 @@ static lv_obj_t *s_prov_scr;
 static lv_obj_t *s_home_state;
 static lv_obj_t *s_home_sub;
 static lv_obj_t *s_home_batt;
+static lv_obj_t *s_home_ip;
+static lv_obj_t *s_home_seg;
+static lv_obj_t *s_home_sent;
 static lv_obj_t *s_stats_rows[6];
 static lv_obj_t *s_prov_ap;
 static lv_timer_t *s_timer;
@@ -69,26 +72,53 @@ static lv_obj_t *base_screen(const char *title)
 
 static void build_home(void)
 {
-    s_home_scr = base_screen("AI PASSPORT  RECORDER");
+    s_home_scr = base_screen("STACKBEAR RECORDER");
     s_home_batt = label(s_home_scr, "--%", &lv_font_montserrat_14, C_TEXT);
     lv_obj_align(s_home_batt, LV_ALIGN_TOP_RIGHT, -12, 10);
 
-    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 150, C_CARD);
+    // 主状态卡:一行大字 + 一行说明,说明允许多行,长地址不会再被截断。
+    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 112, C_CARD);
     s_home_state = label(c, "STARTING", &lv_font_montserrat_20, C_TEXT);
-    lv_obj_center(s_home_state);
+    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 30);
     s_home_sub = label(c, "", &lv_font_montserrat_14, C_MUTED);
+    lv_label_set_long_mode(s_home_sub, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_home_sub, 196);
+    lv_obj_set_style_text_align(s_home_sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -14);
 
-    lv_obj_t *hint = label(s_home_scr, "OK: pause / resume     hold OK: setup",
+    // IP 单行:标题在左、值在右,不会和别的信息挤在一行。
+    lv_obj_t *ip = card(s_home_scr, 12, 164, 216, 34, C_CARD);
+    label(ip, "IP", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(lv_obj_get_child(ip, 0), LV_ALIGN_LEFT_MID, 12, 0);
+    s_home_ip = label(ip, "-", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_align(s_home_ip, LV_ALIGN_RIGHT_MID, -12, 0);
+
+    // 两列统计卡:原来 "IP | seg | sent" 一行放不下,拆成两列。
+    lv_obj_t *a = card(s_home_scr, 12, 204, 104, 46, C_CARD);
+    label(a, "SEGMENTS", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(lv_obj_get_child(a, 0), LV_ALIGN_TOP_MID, 0, 4);
+    s_home_seg = label(a, "0", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_align(s_home_seg, LV_ALIGN_BOTTOM_MID, 0, -5);
+
+    lv_obj_t *b = card(s_home_scr, 124, 204, 104, 46, C_CARD);
+    label(b, "SENT", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(lv_obj_get_child(b, 0), LV_ALIGN_TOP_MID, 0, 4);
+    s_home_sent = label(b, "0", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_align(s_home_sent, LV_ALIGN_BOTTOM_MID, 0, -5);
+
+    // 提示改成两行,不再一条挤到屏幕外。
+    lv_obj_t *hint = label(s_home_scr, "2x UP: record / stop\nhold OK: setup",
                            &lv_font_montserrat_14, C_MUTED);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, 216);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_set_style_text_line_space(hint, 4, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
 }
 
 static void build_stats(void)
 {
-    static const char *names[6] = {"State", "Wi-Fi", "IP", "Server", "Device", "Audio"};
+    static const char *names[6] = {"State", "Wi-Fi", "IP", "Server", "Device", "Seg/Sent"};
     s_stats_scr = base_screen("STATUS");
     for (int i = 0; i < 6; i++) {
         lv_obj_t *c = card(s_stats_scr, 12, 40 + i * 44, 216, 38, C_CARD);
@@ -166,12 +196,19 @@ static void refresh(lv_timer_t *t)
     }
     if (s_home_sub) {
         if (sb_net_state() == SB_NET_UP) {
-            lv_label_set_text_fmt(s_home_sub, "%s  |  %lu seg  |  %lu sent",
-                                  sb_net_ip(), (unsigned long)sb_recorder_segments(),
-                                  (unsigned long)sb_uplink_frames_sent());
+            lv_label_set_text(s_home_sub, "uploading speech to cloud");
         } else {
-            lv_label_set_text(s_home_sub, "waiting for network");
+            lv_label_set_text(s_home_sub, "waiting for Wi-Fi\nhold OK to set up");
         }
+    }
+    if (s_home_ip) {
+        lv_label_set_text(s_home_ip, sb_net_state() == SB_NET_UP ? sb_net_ip() : "-");
+    }
+    if (s_home_seg) {
+        lv_label_set_text_fmt(s_home_seg, "%lu", (unsigned long)sb_recorder_segments());
+    }
+    if (s_home_sent) {
+        lv_label_set_text_fmt(s_home_sent, "%lu", (unsigned long)sb_uplink_frames_sent());
     }
     if (s_stats_rows[0]) {
         lv_label_set_text(s_stats_rows[0], st);
@@ -181,7 +218,7 @@ static void refresh(lv_timer_t *t)
         const sb_config_t *cfg = sb_config_get();
         lv_label_set_text_fmt(s_stats_rows[3], "%s:%u", cfg->srv_host, (unsigned)cfg->srv_port);
         lv_label_set_text(s_stats_rows[4], cfg->dev_id);
-        lv_label_set_text_fmt(s_stats_rows[5], "seg %lu / sent %lu / drop %lu",
+        lv_label_set_text_fmt(s_stats_rows[5], "%lu/%lu/%lu",
                               (unsigned long)sb_recorder_segments(),
                               (unsigned long)sb_uplink_frames_sent(),
                               (unsigned long)sb_uplink_frames_dropped());
