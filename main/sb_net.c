@@ -46,9 +46,10 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     (void)arg;
     (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (!s_provisioning) {
-            esp_wifi_connect();
-        }
+        // 不在 STA_START 里自动连接:那样会把 STA 置为 connecting,之后
+        // sb_net_sta_connect() 再调 esp_wifi_set_config() 会返回
+        // ESP_ERR_WIFI_STATE("sta is connecting, cannot set config")。
+        // 连接统一由 sb_net_sta_connect() 负责。
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_state = SB_NET_DOWN;
         s_ip[0] = '\0';
@@ -87,7 +88,11 @@ esp_err_t sb_net_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    // 已启动时再调会返回 ESP_ERR_WIFI_STATE/ESP_OK;只容忍状态类错误,不 abort。
+    esp_err_t se = esp_wifi_start();
+    if (se != ESP_OK && se != ESP_ERR_WIFI_STATE) {
+        return se;
+    }
     s_wifi_inited = true;
     return ESP_OK;
 }
@@ -106,9 +111,21 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass)
     // 配网期间必须保持 APSTA:此刻手机正连着 SoftAP 打开配置页,若切回 STA-only
     // 会把 SoftAP 关掉,手机与配置页的连接随之断开,POST /save 永远拿不到响应。
     if (!s_provisioning) {
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (m != ESP_OK && m != ESP_ERR_WIFI_STATE) {
+            s_state = SB_NET_DOWN;
+            return m;
+        }
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+    // STA 若还在 connecting,set_config 会返回 ESP_ERR_WIFI_STATE。这里先断开
+    // (断开本身可能返回"未连接",忽略),再配置 —— 绝不能再用 ESP_ERROR_CHECK,
+    // 那会在状态冲突时直接 abort 重启设备。
+    (void)esp_wifi_disconnect();
+    esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (cfg_err != ESP_OK) {
+        s_state = SB_NET_DOWN;
+        return cfg_err;
+    }
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK) {
         s_state = SB_NET_DOWN;
@@ -170,7 +187,11 @@ esp_err_t sb_net_provision_start(void)
         s_ap_netif = esp_netif_create_default_wifi_ap();
     }
     // APSTA:一边开热点给手机配网,一边准备验证家里热点。
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    esp_err_t m = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (m != ESP_OK) {
+        s_provisioning = false;
+        return m;
+    }
     wifi_config_t ap = {0};
     uint8_t mac[6] = {0};
     esp_wifi_get_mac(WIFI_IF_AP, mac);
@@ -179,8 +200,16 @@ esp_err_t sb_net_provision_start(void)
     strlcpy((char *)ap.ap.password, "passport1234", sizeof(ap.ap.password));
     ap.ap.max_connection = 2;
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_err_t ap_err = esp_wifi_set_config(WIFI_IF_AP, &ap);
+    if (ap_err != ESP_OK) {
+        s_provisioning = false;
+        return ap_err;
+    }
+    esp_err_t se = esp_wifi_start();
+    if (se != ESP_OK && se != ESP_ERR_WIFI_STATE) {
+        s_provisioning = false;
+        return se;
+    }
     ESP_ERROR_CHECK(sb_net_provision_web_start());
     ESP_LOGI(TAG, "配网已开启: 热点 %s, 配置页 http://192.168.4.1/", ap.ap.ssid);
     return ESP_OK;
