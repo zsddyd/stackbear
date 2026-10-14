@@ -103,9 +103,12 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass)
     wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
     xEventGroupClearBits(s_events, STA_CONNECT_BIT | STA_FAIL_BIT);
     s_state = SB_NET_CONNECTING;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    // 配网期间必须保持 APSTA:此刻手机正连着 SoftAP 打开配置页,若切回 STA-only
+    // 会把 SoftAP 关掉,手机与配置页的连接随之断开,POST /save 永远拿不到响应。
+    if (!s_provisioning) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    }
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    ESP_ERROR_CHECK(esp_wifi_start());
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK) {
         s_state = SB_NET_DOWN;
@@ -162,11 +165,12 @@ esp_err_t sb_net_provision_start(void)
     }
     s_prov_result = 0;
     s_provisioning = true;
-    // APSTA:一边开热点给手机配网,一边准备验证家里热点。
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    // 先建 netif 再设模式:netif 创建应在 driver 模式切换之前完成。
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
     }
+    // APSTA:一边开热点给手机配网,一边准备验证家里热点。
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     wifi_config_t ap = {0};
     uint8_t mac[6] = {0};
     esp_wifi_get_mac(WIFI_IF_AP, mac);

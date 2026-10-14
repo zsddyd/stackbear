@@ -132,6 +132,14 @@ static void app_task(void *arg)
         return;
     }
     for (;;) {
+        // 配网页里连接成功 -> 关闭 SoftAP/网页,回到主页继续正常流程。
+        if (s_setup_mode && sb_net_provision_result() == 1) {
+            sb_net_provision_stop();
+            s_setup_mode = false;
+            ui_show_locked(SB_SCREEN_HOME);
+            ESP_LOGI(TAG, "配网成功,退出配网模式");
+            continue;
+        }
         if (s_setup_mode) {
             vTaskDelay(pdMS_TO_TICKS(300));
             continue;
