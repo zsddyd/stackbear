@@ -65,6 +65,23 @@
 | `tools/usb_console.py` | 在 Termux/Android 上读取 ESP32 原生 USB-CDC 控制台。Android 没有串口设备节点,minicom/pyserial 都连不上;本工具用 pyusb 包装 `termux-usb` 的设备描述符,读取 bulk-IN 端点。 |
 | `tools/adpcm_to_wav.py` | 把落盘的会话(`audio.adpcm`,或旧的 `audio.opus`)解码成可播放的 WAV,并打印时长、峰值与 RMS,不听也能确认录音是否有效。 |
 
+## 转写 provider 层
+
+`cloud/src/stackbear/providers.py` 把 ASR 厂商隔离在一个接口之后(厂商、模型、地址、
+密钥),接收端不关心由谁转写。配置只从环境变量读取,密钥绝不入库:
+
+```text
+STACKBEAR_ASR_PROVIDER  提供方名称(默认 openrouter)
+STACKBEAR_ASR_VENDOR    随结果一起记录的厂商标签
+STACKBEAR_ASR_MODEL     例如 nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+STACKBEAR_ASR_BASE_URL  默认 https://openrouter.ai/api/v1
+STACKBEAR_ASR_API_KEY   bearer token
+```
+
+`python -m stackbear.transcribe <会话> --per-segment` 会解码会话、按记录的 VAD 分段
+切分并逐段转写;`--dry-run` 只检查配置不调用 API,`--write` 把 `transcript.txt` /
+`transcript.json` 写回会话目录。
+
 ## 构建、烧录与测试流程
 
 - **构建**:只走 GitHub Actions(`.github/workflows/build-firmware.yml`),在

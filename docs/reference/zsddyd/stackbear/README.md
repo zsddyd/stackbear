@@ -76,6 +76,25 @@ These were all found with the on-device console tool, in this order:
 | `tools/usb_console.py` | Reads the ESP32 native USB-CDC console on Termux/Android, where there is no serial tty and minicom/pyserial cannot attach. Wraps the `termux-usb` descriptor with pyusb and streams the bulk-IN endpoint. |
 | `tools/adpcm_to_wav.py` | Decodes a stored session (`audio.adpcm`, or legacy `audio.opus`) into a playable WAV, and prints duration, peak and RMS so the recording can be checked without listening. |
 
+## Transcription provider layer
+
+`cloud/src/stackbear/providers.py` isolates the ASR vendor behind one interface
+(vendor, model, endpoint, key), so the receiver does not care who transcribes.
+Configuration is environment-only and keys are never committed:
+
+```text
+STACKBEAR_ASR_PROVIDER  provider name (default: openrouter)
+STACKBEAR_ASR_VENDOR    label recorded with the result
+STACKBEAR_ASR_MODEL     e.g. nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+STACKBEAR_ASR_BASE_URL  default: https://openrouter.ai/api/v1
+STACKBEAR_ASR_API_KEY   bearer token
+```
+
+`python -m stackbear.transcribe <session> --per-segment` decodes the session,
+splits it on the recorded VAD boundaries and transcribes each utterance;
+`--dry-run` checks the setup without calling the API, and `--write` stores
+`transcript.txt` / `transcript.json` beside the session.
+
 ## Build, flash and test workflow
 
 - **Build:** GitHub Actions only (`.github/workflows/build-firmware.yml`), which
