@@ -27,6 +27,7 @@ static const char *TAG = "sb_uplink";
 
 typedef struct {
     uint16_t len;
+    uint8_t  flags;
     uint8_t  data[SB_PROTO_MAX_PAYLOAD];
 } sb_ul_item_t;
 
@@ -148,7 +149,7 @@ static void uplink_task(void *arg)
         }
 
         if (xQueueReceive(s_queue, &item, pdMS_TO_TICKS(200)) == pdTRUE) {
-            if (!send_frame(fd, SB_FRAME_AUDIO, 0, s_seq, item.data, item.len)) {
+            if (!send_frame(fd, SB_FRAME_AUDIO, item.flags, s_seq, item.data, item.len)) {
                 close(fd);
                 fd = -1;
                 s_state = SB_UL_ERROR;
@@ -255,13 +256,14 @@ void sb_uplink_end_session(void)
     s_end_requested = true;
 }
 
-bool sb_uplink_push_audio(const uint8_t *data, size_t len)
+bool sb_uplink_push_audio(const uint8_t *data, size_t len, uint8_t flags)
 {
     if (s_queue == NULL || data == NULL || len == 0 || len > SB_PROTO_MAX_PAYLOAD) {
         return false;
     }
     sb_ul_item_t item;
     item.len = (uint16_t)len;
+    item.flags = flags;
     memcpy(item.data, data, len);
     if (xQueueSend(s_queue, &item, 0) != pdTRUE) {
         s_dropped++;

@@ -35,6 +35,8 @@
   `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`。
 - 音频格式:IMA-ADPCM,4bit,16kHz 单声道,每个 60ms 帧一个自包含块
   (`[2 字节大端长度][4 字节块头 + nibble]`),约 7.8 KB/s。
+- 分段边界跟随音频一起走:每个 VAD 语音段的第一块在 AUDIO 帧上置 `SEG_START` 标志,
+  接收端把每段的起始偏移与帧数记进 `meta.json`,便于按句提交转写。
 
 ## 排查出来的工程结论
 

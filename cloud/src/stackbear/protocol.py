@@ -32,6 +32,8 @@ TYPE_PING = 0x04
 TYPE_ACK = 0x80
 
 FLAG_LAST = 0x01
+# AUDIO frame flag: this block is the first block of a new VAD speech segment.
+FLAG_SEG_START = 0x02
 
 
 def crc16_ccitt(data: bytes) -> int:

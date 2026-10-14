@@ -47,6 +47,8 @@ static void recorder_task(void *arg)
 
     int fill = 0;  // opus 帧内已累计的采样数
     uint32_t level_tick = 0;
+    bool in_segment = false;      // 当前是否处在某个语音段内
+    bool seg_start_pending = false;  // 这段的第一块要带 SB_FLAG_SEG_START
     if (bsp_audio_init() != ESP_OK) {
         ESP_LOGE(TAG, "音频初始化失败,录音任务退出");
         g_sb_diag.rec_err = SB_REC_ERR_AUDIO_INIT;
@@ -85,11 +87,18 @@ static void recorder_task(void *arg)
         }
         if (ev == SB_VAD_SPEECH_END) {
             s_segments++;
+            in_segment = false;
         }
         // 只在语音段(含拖尾)内累计;纯静音帧直接丢,不占 opus 帧。
         if (ev == SB_VAD_SILENCE) {
             fill = 0;
+            in_segment = false;
             continue;
+        }
+        // 静音之后的第一帧语音 = 新段开始;它所在的那一块会被标记为段首。
+        if (!in_segment) {
+            in_segment = true;
+            seg_start_pending = true;
         }
         memcpy(&codec_pcm[fill * VAD_FRAME_SAMPLES], pcm, VAD_FRAME_BYTES);
         fill++;
@@ -100,7 +109,9 @@ static void recorder_task(void *arg)
         const size_t n = sb_adpcm_encode_block(&enc, codec_pcm, SB_AUDIO_FRAME_SAMPLES,
                                                enc_out, sizeof(enc_out));
         if (n > 0) {
-            sb_uplink_push_audio(enc_out, n);
+            const uint8_t flags = seg_start_pending ? SB_FLAG_SEG_START : 0;
+            sb_uplink_push_audio(enc_out, n, flags);
+            seg_start_pending = false;
             s_frames++;
             if (s_frames == 1) {
                 // 打印真实栈高水位(md 小 = 用得少),据此调整 REC_TASK_STACK_WORDS。

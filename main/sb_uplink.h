@@ -27,5 +27,6 @@ void sb_uplink_begin_session(void);
 // 结束当前会话:排空队列后发 END 并断开。
 void sb_uplink_end_session(void);
 
-// 入队一个 Opus 帧(不阻塞)。队列满时丢弃并计数,返回 false。
-bool sb_uplink_push_audio(const uint8_t *data, size_t len);
+// 入队一个音频帧(不阻塞)。flags 取 sb_proto.h 的 SB_FLAG_*(如 SB_FLAG_SEG_START
+// 标记新语音段的第一块)。队列满时丢弃并计数,返回 false。
+bool sb_uplink_push_audio(const uint8_t *data, size_t len, uint8_t flags);

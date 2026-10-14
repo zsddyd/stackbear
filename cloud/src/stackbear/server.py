@@ -83,9 +83,14 @@ class Session:
             "first_seq": None,
             "last_seq": None,
             "gaps": 0,
+            # 每个 VAD 语音段一条:{start_ms, first_seq, frames}。设备在段落第一块上
+            # 置 SB_FLAG_SEG_START,云端据此切分,供后续按段提交 ASR。
+            "segments": [],
+            "seg_count": 0,
         }
         self._fh = self.audio_path.open("wb")
         self._last_seq: int | None = None
+        self._cur_seg: dict | None = None
 
     def set_hello(self, hello: dict) -> None:
         for key in ("codec", "sample_rate", "channels", "frame_ms"):
@@ -95,11 +100,21 @@ class Session:
             if hello.get(key) is not None:
                 self.meta[key] = hello[key]
 
-    def add_audio(self, seq: int, payload: bytes) -> None:
+    def add_audio(self, seq: int, payload: bytes, flags: int = 0) -> None:
         if self._last_seq is not None and seq != (self._last_seq + 1) & 0xFFFF:
             self.meta["gaps"] += 1
         if self.meta["first_seq"] is None:
             self.meta["first_seq"] = seq
+        if flags & protocol.FLAG_SEG_START:
+            self._cur_seg = {"start_ms": self.meta["audio_ms"], "first_seq": seq, "frames": 0}
+            self.meta["segments"].append(self._cur_seg)
+            self.meta["seg_count"] = len(self.meta["segments"])
+        elif self._cur_seg is None:
+            # 容错:第一块没带标记(旧固件或丢包)时,从它开始自建一段。
+            self._cur_seg = {"start_ms": self.meta["audio_ms"], "first_seq": seq, "frames": 0}
+            self.meta["segments"].append(self._cur_seg)
+            self.meta["seg_count"] = len(self.meta["segments"])
+        self._cur_seg["frames"] += 1
         self._last_seq = seq
         self.meta["last_seq"] = seq
         self._fh.write(struct.pack(">H", len(payload)) + payload)
@@ -211,7 +226,7 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                     elif frame.type == protocol.TYPE_AUDIO:
                         if session is None:
                             session = Session("unknown")  # 容错:未见 HELLO 也收
-                        session.add_audio(frame.seq, frame.payload)
+                        session.add_audio(frame.seq, frame.payload, frame.flags)
                         writer.write(protocol.encode(protocol.TYPE_ACK, frame.seq))
                     elif frame.type == protocol.TYPE_END:
                         if session is not None:

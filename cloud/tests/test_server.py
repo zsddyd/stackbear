@@ -35,7 +35,9 @@ async def _client(host: str, port: int) -> None:
     writer.write(protocol.encode(protocol.TYPE_HELLO, 0, hello))
     for seq in range(1, 6):
         frame = bytes([seq] * 20)  # 假装 20 字节的 opus 包
-        writer.write(protocol.encode(protocol.TYPE_AUDIO, seq, frame))
+        # Frames 1-3 form the first VAD segment, 4-5 a second one.
+        flags = protocol.FLAG_SEG_START if seq in (1, 4) else 0
+        writer.write(protocol.encode(protocol.TYPE_AUDIO, seq, frame, flags))
     writer.write(protocol.encode(protocol.TYPE_END, 6, b'{"frames":5}', protocol.FLAG_LAST))
     await writer.drain()
 
@@ -82,6 +84,12 @@ async def _run() -> None:
             check(meta["frames"] == 5, f"meta frames == 5, got {meta['frames']}")
             check(meta["audio_ms"] == 300, f"meta audio_ms == 300, got {meta['audio_ms']}")
             check(meta["first_seq"] == 1 and meta["last_seq"] == 5, "seq range")
+            check(meta["seg_count"] == 2, f"seg_count == 2, got {meta['seg_count']}")
+            segs = meta["segments"]
+            check(segs[0]["start_ms"] == 0 and segs[0]["frames"] == 3,
+                  f"segment 0 {segs[0]}")
+            check(segs[1]["start_ms"] == 180 and segs[1]["frames"] == 2,
+                  f"segment 1 {segs[1]}")
             blob = (sdir / "audio.adpcm").read_bytes()
             # 每个包 2 字节长度前缀 + 20 字节负载
             check(len(blob) == 5 * 22, f"audio.adpcm length, got {len(blob)}")

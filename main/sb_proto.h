@@ -38,7 +38,11 @@ typedef enum {
     SB_FRAME_ACK   = 0x80,  // 服务端 -> 设备:确认收到 seq
 } sb_frame_type_t;
 
-#define SB_FLAG_LAST 0x01u
+// AUDIO 帧标志位。除 LAST 外,SEG_START 用来标记"本块是一个新语音段的第一块"。
+// 不新增帧型是刻意的:分段边界随音频帧一起走,不占额外带宽,断线重连也不会错位。
+// 云端据此把每段的起始毫秒偏移与帧数记进会话 meta,供后续按段提交 ASR。
+#define SB_FLAG_LAST      0x01u
+#define SB_FLAG_SEG_START 0x02u
 
 typedef struct {
     uint8_t  type;

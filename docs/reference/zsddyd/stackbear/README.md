@@ -38,6 +38,10 @@ session for later transcription.
   `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`.
 - Audio format: IMA-ADPCM, 4 bit, 16 kHz mono, one self-contained 60 ms block per
   frame (`[2-byte big-endian length][4-byte header + nibbles]`), roughly 7.8 KB/s.
+- Segment boundaries travel with the audio: the first block of every VAD segment
+  sets the `SEG_START` flag on its AUDIO frame, and the receiver records each
+  segment's start offset and frame count in `meta.json`, so transcription can be
+  submitted per utterance.
 
 ## Hand-won engineering findings
 
