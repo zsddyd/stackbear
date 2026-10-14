@@ -21,7 +21,9 @@ static const char *TAG = "sb_recorder";
 #define VAD_FRAME_SAMPLES 320                                   // 20 ms @16k
 #define VAD_FRAME_BYTES   (VAD_FRAME_SAMPLES * sizeof(int16_t))
 #define OPUS_FRAMES_PER_BLOCK (SB_OPUS_FRAME_SAMPLES / VAD_FRAME_SAMPLES)  // 3
-#define REC_TASK_STACK_WORDS 2048                               // 8 KiB
+// 24 KB 静态栈:录音任务要调 bsp_audio_init()/esp_codec_dev_open 并跑 Opus 编码,
+// 8 KB 会在音频初始化时溢出导致重启(屏幕反复闪白)。仓库里同类实现也用 24 KB。
+#define REC_TASK_STACK_WORDS 6144                               // 24 KiB
 
 static StackType_t s_stack[REC_TASK_STACK_WORDS];
 static StaticTask_t s_tcb;
