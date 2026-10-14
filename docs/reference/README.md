@@ -116,6 +116,12 @@ general, upstream-benefiting experience goes to the upstream
 `FoloToy/ai-passport` as a PR; fork-specific customization stays in the fork per
 [`docs/fork-guide.md`](../fork-guide.md).
 
+### zsddyd
+
+**Application playbooks:**
+
+- [Stackbear — Always-On Voice Recorder](zsddyd/stackbear/README.md) — an always-on VAD recorder that encodes speech as IMA-ADPCM and streams it over a private TCP protocol to an Aliyun ECS receiver, with on-device SoftAP provisioning and a redesigned English UI.
+
 ## Archiving an application
 
 When an application is published, archive it under the repository-relative
