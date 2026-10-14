@@ -29,7 +29,7 @@ static lv_obj_t *s_home_sub;
 static lv_obj_t *s_home_batt;
 static lv_obj_t *s_stats_rows[6];
 static lv_obj_t *s_prov_ap;
-static lv_obj_t *s_timer;
+static lv_timer_t *s_timer;
 static char s_ap_name[40] = "";
 
 static lv_obj_t *card(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color)
