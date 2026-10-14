@@ -44,6 +44,12 @@ jobs:
         id: artifact_name
         run: echo "name=passport-${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
 
+      - name: Show resolved dependencies.lock
+        run: |
+          echo "===DEPSLOCK-BEGIN==="
+          cat dependencies.lock
+          echo "===DEPSLOCK-END==="
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
