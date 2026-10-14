@@ -22,7 +22,6 @@
 #include "lvgl.h"
 #include "sb_config.h"
 #include "sb_net.h"
-#include "sb_opus.h"
 #include "sb_recorder.h"
 #include "sb_ui.h"
 #include "sb_uplink.h"

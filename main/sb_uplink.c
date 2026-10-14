@@ -16,7 +16,7 @@
 #include "lwip/sockets.h"
 #include "sb_config.h"
 #include "sb_diag.h"
-#include "sb_opus.h"
+#include "sb_adpcm.h"
 #include "sb_proto.h"
 
 static const char *TAG = "sb_uplink";
@@ -93,10 +93,10 @@ static bool send_hello(int fd)
     g_sb_diag.free_heap = esp_get_free_heap_size();
     char hello[256];
     const int n = snprintf(hello, sizeof(hello),
-                           "{\"dev\":\"%s\",\"v\":1,\"codec\":\"opus\",\"sample_rate\":%d,"
+                           "{\"dev\":\"%s\",\"v\":1,\"codec\":\"adpcm\",\"sample_rate\":%d,"
                            "\"channels\":1,\"frame_ms\":%d,\"boot_ms\":%u,"
                            "\"rec_err\":%d,\"opus_err\":%d,\"heap\":%u}",
-                           cfg->dev_id, SB_OPUS_RATE, SB_OPUS_FRAME_MS,
+                           cfg->dev_id, SB_AUDIO_RATE, SB_AUDIO_FRAME_MS,
                            (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS),
                            (int)g_sb_diag.rec_err, (int)g_sb_diag.opus_err,
                            (unsigned)g_sb_diag.free_heap);

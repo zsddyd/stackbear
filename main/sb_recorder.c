@@ -12,7 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sb_diag.h"
-#include "sb_opus.h"
+#include "sb_adpcm.h"
 #include "sb_uplink.h"
 #include "sb_vad.h"
 
@@ -39,8 +39,10 @@ static void recorder_task(void *arg)
     (void)arg;
     static int16_t pcm[VAD_FRAME_SAMPLES];
     static int16_t opus_pcm[SB_OPUS_FRAME_SAMPLES];
-    static uint8_t opus_out[512];
+    static uint8_t enc_out[SB_ADPCM_MAX_BYTES];
+    sb_adpcm_enc_t enc;
     sb_vad_t vad;
+    sb_adpcm_init(&enc);
     sb_vad_init(&vad, NULL);
 
     int fill = 0;  // opus 帧内已累计的采样数
@@ -54,15 +56,6 @@ static void recorder_task(void *arg)
     if (bsp_audio_set_format(SB_OPUS_RATE, 16, 1) != ESP_OK) {
         ESP_LOGE(TAG, "音频格式设置失败");
         g_sb_diag.rec_err = SB_REC_ERR_AUDIO_FORMAT;
-        s_running = false;
-        vTaskDelete(NULL);
-        return;
-    }
-    // 音频(I2S DMA)先拿内存,再建 Opus 编码器。反过来会让 25 KB 的编码器占用
-    // 内部 DMA 可用内存,导致 i2s_alloc_dma_desc 报 ESP_ERR_NO_MEM、录音初始化失败。
-    if (sb_opus_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Opus 编码器初始化失败,录音任务退出");
-        g_sb_diag.rec_err = SB_REC_ERR_OPUS_INIT;
         s_running = false;
         vTaskDelete(NULL);
         return;
@@ -96,18 +89,18 @@ static void recorder_task(void *arg)
             continue;
         }
         fill = 0;
-        const int n = sb_opus_encode(opus_pcm, opus_out, sizeof(opus_out));
+        const size_t n = sb_adpcm_encode_block(&enc, opus_pcm, SB_AUDIO_FRAME_SAMPLES,
+                                               enc_out, sizeof(enc_out));
         if (n > 0) {
-            sb_uplink_push_audio(opus_out, (size_t)n);
+            sb_uplink_push_audio(enc_out, n);
             s_frames++;
             if (s_frames == 1) {
                 // 打印真实栈高水位(md 小 = 用得少),据此调整 REC_TASK_STACK_WORDS。
-                ESP_LOGI(TAG, "首帧已编码 %d 字节;栈高水位剩余 %u 字",
-                         n, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                ESP_LOGI(TAG, "首帧已编码 %u 字节(ADPCM);栈高水位剩余 %u 字",
+                         (unsigned)n, (unsigned)uxTaskGetStackHighWaterMark(NULL));
             }
         }
     }
-    sb_opus_deinit();
     s_task = NULL;
     s_running = false;
     vTaskDelete(NULL);

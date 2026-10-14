@@ -4,7 +4,7 @@ idf_component_register(
          "sb_diag.c"
          "sb_proto.c"
          "sb_vad.c"
-         "sb_opus.c"
+         "sb_adpcm.c"
          "sb_net.c"
          "sb_net_web.c"
          "sb_uplink.c"
