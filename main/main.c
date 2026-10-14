@@ -22,6 +22,7 @@
 #include "lvgl.h"
 #include "sb_config.h"
 #include "sb_net.h"
+#include "sb_opus.h"
 #include "sb_recorder.h"
 #include "sb_ui.h"
 #include "sb_uplink.h"
@@ -171,6 +172,12 @@ void app_main(void)
     ESP_LOGI(TAG, "stackbear 全天候录音卡启动");
     if (sb_config_init() != ESP_OK) {
         ESP_LOGE(TAG, "配置初始化失败");
+    }
+    // Opus 编码器要在 WiFi/LVGL 之前创建:它是常驻的大块连续内存(约 25 KB),
+    // 等网络和界面起来后堆只剩 ~45 KB 且已碎片化,opus_encoder_create 会以
+    // OPUS_ALLOC_FAIL(-7) 失败。抢在启动早期分配最稳妥。
+    if (sb_opus_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Opus 编码器早期初始化失败,录音将不可用");
     }
     bsp_i2c_init();
 
