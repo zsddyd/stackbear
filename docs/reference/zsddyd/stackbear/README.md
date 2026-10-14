@@ -85,10 +85,18 @@ Configuration is environment-only and keys are never committed:
 ```text
 STACKBEAR_ASR_PROVIDER  provider name (default: openrouter)
 STACKBEAR_ASR_VENDOR    label recorded with the result
-STACKBEAR_ASR_MODEL     e.g. nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+STACKBEAR_ASR_MODEL     default: qwen/qwen3.8-omni-flash
 STACKBEAR_ASR_BASE_URL  default: https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
+
+Model notes measured on a mainland-China host with one 12.5 s device recording
+(16 kHz mono WAV sent as an `input_audio` part): `mistralai/voxtral-small-24b-2507`
+and `qwen/qwen3.8-omni-flash` both return a correct transcript;
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` is listed as audio-capable but
+drops the audio and asks for a file; `google/*` and `openai/*` audio models return
+HTTP 403 "not available in your region"; `xiaomi/mimo-v2.6-flash` returns an empty
+transcript. Changing models needs only this environment variable.
 
 `python -m stackbear.transcribe <session> --per-segment` decodes the session,
 splits it on the recorded VAD boundaries and transcribes each utterance;

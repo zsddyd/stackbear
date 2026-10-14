@@ -73,10 +73,16 @@
 ```text
 STACKBEAR_ASR_PROVIDER  提供方名称(默认 openrouter)
 STACKBEAR_ASR_VENDOR    随结果一起记录的厂商标签
-STACKBEAR_ASR_MODEL     例如 nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+STACKBEAR_ASR_MODEL     默认 qwen/qwen3.8-omni-flash
 STACKBEAR_ASR_BASE_URL  默认 https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
+
+模型实测(国内主机、一段 12.5 秒真机录音,16kHz 单声道 WAV 以 `input_audio` 提交):
+`mistralai/voxtral-small-24b-2507` 与 `qwen/qwen3.8-omni-flash` 都能正确转写;
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 虽在音频模型列表里,实际会丢掉音频
+并反过来索要文件;`google/*`、`openai/*` 的音频模型返回 403“本地区不可用”;
+`xiaomi/mimo-v2.6-flash` 返回空文本。换模型只需改这一个环境变量。
 
 `python -m stackbear.transcribe <会话> --per-segment` 会解码会话、按记录的 VAD 分段
 切分并逐段转写;`--dry-run` 只检查配置不调用 API,`--write` 把 `transcript.txt` /

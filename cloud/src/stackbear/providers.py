@@ -32,6 +32,11 @@ from typing import Callable
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+# A model that is actually reachable and audio-capable from a mainland-China host
+# was chosen as the default after measuring several candidates: Mistral Voxtral
+# and Qwen omni both transcribe our 16 kHz mono WAV; the Nemotron omni free model
+# drops the audio, and the Google/OpenAI audio models are geo-blocked there.
+DEFAULT_MODEL = "qwen/qwen3.8-omni-flash"
 DEFAULT_PROMPT = (
     "Transcribe the speech in this audio. Reply with the plain transcript only, "
     "without commentary, timestamps or speaker labels."
@@ -46,7 +51,7 @@ class ProviderError(RuntimeError):
 class AsrConfig:
     provider: str = DEFAULT_PROVIDER
     vendor: str = "openrouter"
-    model: str = ""
+    model: str = DEFAULT_MODEL
     base_url: str = DEFAULT_OPENROUTER_URL
     api_key: str = ""
     timeout: float = 120.0
@@ -59,7 +64,7 @@ class AsrConfig:
         return cls(
             provider=source.get("STACKBEAR_ASR_PROVIDER", DEFAULT_PROVIDER),
             vendor=source.get("STACKBEAR_ASR_VENDOR", source.get("STACKBEAR_ASR_PROVIDER", DEFAULT_PROVIDER)),
-            model=source.get("STACKBEAR_ASR_MODEL", ""),
+            model=source.get("STACKBEAR_ASR_MODEL", DEFAULT_MODEL),
             base_url=source.get("STACKBEAR_ASR_BASE_URL", DEFAULT_OPENROUTER_URL),
             api_key=source.get("STACKBEAR_ASR_API_KEY", ""),
             timeout=float(source.get("STACKBEAR_ASR_TIMEOUT", "120")),
