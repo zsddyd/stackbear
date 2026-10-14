@@ -21,9 +21,10 @@ static const char *TAG = "sb_recorder";
 #define VAD_FRAME_SAMPLES 320                                   // 20 ms @16k
 #define VAD_FRAME_BYTES   (VAD_FRAME_SAMPLES * sizeof(int16_t))
 #define OPUS_FRAMES_PER_BLOCK (SB_OPUS_FRAME_SAMPLES / VAD_FRAME_SAMPLES)  // 3
-// 24 KB 静态栈:录音任务要调 bsp_audio_init()/esp_codec_dev_open 并跑 Opus 编码,
-// 8 KB 会在音频初始化时溢出导致重启(屏幕反复闪白)。仓库里同类实现也用 24 KB。
-#define REC_TASK_STACK_WORDS 6144                               // 24 KiB
+// 静态栈:录音任务要调 bsp_audio_init()/esp_codec_dev_open 并跑 libopus 编码。
+// 串口实测 24 KB 仍会在编码循环里触发 "Stack protection fault",这里加到 32 KB,
+// 并在首个编码帧后打印高水位,便于按真实占用再收敛(不要继续靠猜)。
+#define REC_TASK_STACK_WORDS 8192                               // 32 KiB
 
 static StackType_t s_stack[REC_TASK_STACK_WORDS];
 static StaticTask_t s_tcb;
@@ -99,6 +100,11 @@ static void recorder_task(void *arg)
         if (n > 0) {
             sb_uplink_push_audio(opus_out, (size_t)n);
             s_frames++;
+            if (s_frames == 1) {
+                // 打印真实栈高水位(md 小 = 用得少),据此调整 REC_TASK_STACK_WORDS。
+                ESP_LOGI(TAG, "首帧已编码 %d 字节;栈高水位剩余 %u 字",
+                         n, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            }
         }
     }
     sb_opus_deinit();
