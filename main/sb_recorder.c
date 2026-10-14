@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "sb_diag.h"
 #include "sb_adpcm.h"
+#include "sb_proto.h"
 #include "sb_uplink.h"
 #include "sb_vad.h"
 
