@@ -46,6 +46,7 @@ static void recorder_task(void *arg)
     sb_vad_init(&vad, NULL);
 
     int fill = 0;  // opus 帧内已累计的采样数
+    uint32_t level_tick = 0;
     if (bsp_audio_init() != ESP_OK) {
         ESP_LOGE(TAG, "音频初始化失败,录音任务退出");
         g_sb_diag.rec_err = SB_REC_ERR_AUDIO_INIT;
@@ -75,6 +76,13 @@ static void recorder_task(void *arg)
             continue;
         }
         const sb_vad_ev_t ev = sb_vad_process(&vad, pcm, VAD_FRAME_SAMPLES);
+        // 每秒打印一次麦克风电平与当前进入阈值:用来区分"麦克风没采到声音"和
+        // "采到了但 VAD 阈值定得太高"。rms 长期贴近 0 就是采集侧问题。
+        if (++level_tick % 50 == 0) {
+            ESP_LOGI(TAG, "mic rms=%u 阈值=%u 已编码帧=%u",
+                     (unsigned)sb_vad_rms(pcm, VAD_FRAME_SAMPLES),
+                     (unsigned)sb_vad_enter_threshold(&vad), (unsigned)s_frames);
+        }
         if (ev == SB_VAD_SPEECH_END) {
             s_segments++;
         }
