@@ -27,10 +27,9 @@ static lv_obj_t *s_prov_scr;
 static lv_obj_t *s_home_state;
 static lv_obj_t *s_home_sub;
 static lv_obj_t *s_home_batt;
-static lv_obj_t *s_home_dev_ip;
-static lv_obj_t *s_home_srv_ip;
 static lv_obj_t *s_home_seg;
 static lv_obj_t *s_home_sent;
+static lv_obj_t *s_home_drop;
 static lv_obj_t *s_stats_rows[6];
 static lv_obj_t *s_prov_ap;
 static lv_timer_t *s_timer;
@@ -77,55 +76,33 @@ static void build_home(void)
     s_home_batt = label(s_home_scr, "--%", &lv_font_montserrat_14, C_TEXT);
     lv_obj_align(s_home_batt, LV_ALIGN_TOP_RIGHT, -12, 10);
 
-    // 主状态卡:一行大字 + 一行说明,说明允许多行,长地址不会再被截断。
-    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 96, C_CARD);
+    // 主页只放"现在怎么样":状态 + 三个计数。IP/服务器等细节都在 STATUS 页,
+    // 不在这里重复,免得挤掉主信息。
+    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 132, C_CARD);
     s_home_state = label(c, "STARTING", &lv_font_montserrat_20, C_TEXT);
-    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 42);
     s_home_sub = label(c, "", &lv_font_montserrat_14, C_MUTED);
     lv_label_set_long_mode(s_home_sub, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_home_sub, 196);
     lv_obj_set_style_text_align(s_home_sub, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -14);
 
-    // 两条独立地址行:本机 IP 与上传服务器 IP 分开显示,不再挤在一行。
-    lv_obj_t *dev = card(s_home_scr, 12, 144, 216, 32, C_CARD);
-    label(dev, "DEVICE IP", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(lv_obj_get_child(dev, 0), LV_ALIGN_LEFT_MID, 12, 0);
-    s_home_dev_ip = label(dev, "-", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(s_home_dev_ip, LV_ALIGN_RIGHT_MID, -12, 0);
-
-    lv_obj_t *srv = card(s_home_scr, 12, 178, 216, 32, C_CARD);
-    label(srv, "SERVER IP", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(lv_obj_get_child(srv, 0), LV_ALIGN_LEFT_MID, 12, 0);
-    s_home_srv_ip = label(srv, "-", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(s_home_srv_ip, LV_ALIGN_RIGHT_MID, -12, 0);
-
-    // 两列统计卡:原来 "IP | seg | sent" 一行放不下,拆成两列。
-    lv_obj_t *a = card(s_home_scr, 12, 214, 104, 44, C_CARD);
-    label(a, "SEGMENTS", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(lv_obj_get_child(a, 0), LV_ALIGN_TOP_MID, 0, 4);
-    s_home_seg = label(a, "0", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(s_home_seg, LV_ALIGN_BOTTOM_MID, 0, -5);
-
-    lv_obj_t *b = card(s_home_scr, 124, 214, 104, 44, C_CARD);
-    label(b, "SENT", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(lv_obj_get_child(b, 0), LV_ALIGN_TOP_MID, 0, 4);
-    s_home_sent = label(b, "0", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(s_home_sent, LV_ALIGN_BOTTOM_MID, 0, -5);
-
-    // 提示改成两行,不再一条挤到屏幕外。
-    lv_obj_t *hint = label(s_home_scr, "2x UP: record / stop\nhold OK: setup",
-                           &lv_font_montserrat_14, C_MUTED);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, 216);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(hint, 4, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
+    // 三列计数卡:每张卡都窄,所以标题用短名(SEG/SENT/DROP)。
+    static const char *caps[3] = {"SEG", "SENT", "DROP"};
+    lv_obj_t **vals[3] = {&s_home_seg, &s_home_sent, &s_home_drop};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *k = card(s_home_scr, 12 + i * 74, 194, 68, 62, C_CARD);
+        label(k, caps[i], &lv_font_montserrat_14, C_MUTED);
+        lv_obj_align(lv_obj_get_child(k, 0), LV_ALIGN_TOP_MID, 0, 8);
+        *vals[i] = label(k, "0", &lv_font_montserrat_14, C_TEXT);
+        lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_MID, 0, -10);
+    }
 }
 
 static void build_stats(void)
 {
-    static const char *names[6] = {"State", "Wi-Fi", "IP", "Server", "Device", "Seg/Sent"};
+    // Wi-Fi 行同时给出 SSID;地址拆成 DEVICE IP / SERVER IP,不再单列 Server。
+    static const char *names[6] = {"State", "Wi-Fi", "Device IP", "Server IP", "Device", "Seg/Sent"};
     s_stats_scr = base_screen("STATUS");
     for (int i = 0; i < 6; i++) {
         lv_obj_t *c = card(s_stats_scr, 12, 40 + i * 44, 216, 38, C_CARD);
@@ -135,11 +112,6 @@ static void build_stats(void)
         s_stats_rows[i] = label(c, "-", &lv_font_montserrat_14, C_TEXT);
         lv_obj_align(s_stats_rows[i], LV_ALIGN_RIGHT_MID, -12, 0);
     }
-    lv_obj_t *hint = label(s_stats_scr, "UP/DOWN: back        hold OK: setup",
-                           &lv_font_montserrat_14, C_MUTED);
-    lv_obj_set_width(hint, 216);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
 }
 
 static void build_provision(void)
@@ -208,26 +180,28 @@ static void refresh(lv_timer_t *t)
             lv_label_set_text(s_home_sub, "waiting for Wi-Fi\nhold OK to set up");
         }
     }
-    if (s_home_dev_ip) {
-        lv_label_set_text(s_home_dev_ip, sb_net_state() == SB_NET_UP ? sb_net_ip() : "-");
-    }
-    if (s_home_srv_ip) {
-        // 只显示主机部分,端口固定 18080,放在 Status 页里看完整 host:port。
-        lv_label_set_text(s_home_srv_ip, sb_config_get()->srv_host);
-    }
     if (s_home_seg) {
         lv_label_set_text_fmt(s_home_seg, "%lu", (unsigned long)sb_recorder_segments());
     }
     if (s_home_sent) {
         lv_label_set_text_fmt(s_home_sent, "%lu", (unsigned long)sb_uplink_frames_sent());
     }
+    if (s_home_drop) {
+        lv_label_set_text_fmt(s_home_drop, "%lu", (unsigned long)sb_uplink_frames_dropped());
+    }
     if (s_stats_rows[0]) {
         lv_label_set_text(s_stats_rows[0], st);
         lv_obj_set_style_text_color(s_stats_rows[0], lv_color_hex(color), 0);
-        lv_label_set_text(s_stats_rows[1], sb_net_state() == SB_NET_UP ? "connected" : "down");
-        lv_label_set_text(s_stats_rows[2], sb_net_state() == SB_NET_UP ? sb_net_ip() : "-");
         const sb_config_t *cfg = sb_config_get();
-        lv_label_set_text_fmt(s_stats_rows[3], "%s:%u", cfg->srv_host, (unsigned)cfg->srv_port);
+        // Wi-Fi:连上时直接显示热点名(SSID),断开才显示 down。
+        if (sb_net_state() == SB_NET_UP && cfg->ssid[0]) {
+            lv_label_set_text(s_stats_rows[1], cfg->ssid);
+        } else {
+            lv_label_set_text(s_stats_rows[1], sb_net_state() == SB_NET_CONNECTING ? "connecting" : "down");
+        }
+        lv_label_set_text(s_stats_rows[2], sb_net_state() == SB_NET_UP ? sb_net_ip() : "-");
+        // 服务器只显示地址,不显示端口。
+        lv_label_set_text(s_stats_rows[3], cfg->srv_host);
         lv_label_set_text(s_stats_rows[4], cfg->dev_id);
         lv_label_set_text_fmt(s_stats_rows[5], "%lu/%lu/%lu",
                               (unsigned long)sb_recorder_segments(),
