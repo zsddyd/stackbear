@@ -8,12 +8,14 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "sb_config.h"
+#include "sb_diag.h"
 #include "sb_opus.h"
 #include "sb_proto.h"
 
@@ -84,12 +86,16 @@ static void send_frame(int fd, uint8_t type, uint8_t flags, uint16_t seq,
 static void send_hello(int fd)
 {
     const sb_config_t *cfg = sb_config_get();
-    char hello[192];
+    g_sb_diag.free_heap = esp_get_free_heap_size();
+    char hello[256];
     const int n = snprintf(hello, sizeof(hello),
                            "{\"dev\":\"%s\",\"v\":1,\"codec\":\"opus\",\"sample_rate\":%d,"
-                           "\"channels\":1,\"frame_ms\":%d,\"boot_ms\":%u}",
+                           "\"channels\":1,\"frame_ms\":%d,\"boot_ms\":%u,"
+                           "\"rec_err\":%d,\"opus_err\":%d,\"heap\":%u}",
                            cfg->dev_id, SB_OPUS_RATE, SB_OPUS_FRAME_MS,
-                           (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+                           (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+                           (int)g_sb_diag.rec_err, (int)g_sb_diag.opus_err,
+                           (unsigned)g_sb_diag.free_heap);
     if (n > 0) {
         send_frame(fd, SB_FRAME_HELLO, 0, 0, (const uint8_t *)hello, (uint16_t)n);
     }

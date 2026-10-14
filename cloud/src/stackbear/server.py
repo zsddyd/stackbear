@@ -87,8 +87,9 @@ class Session:
         for key in ("codec", "sample_rate", "channels", "frame_ms"):
             if key in hello:
                 self.meta[key] = hello[key]
-        if hello.get("boot_ms") is not None:
-            self.meta["boot_ms"] = hello["boot_ms"]
+        for key in ("boot_ms", "rec_err", "opus_err", "heap"):
+            if hello.get(key) is not None:
+                self.meta[key] = hello[key]
 
     def add_audio(self, seq: int, payload: bytes) -> None:
         if self._last_seq is not None and seq != (self._last_seq + 1) & 0xFFFF:
@@ -194,6 +195,12 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                     if frame.type == protocol.TYPE_HELLO:
                         hello = _parse_hello(frame.payload)
                         dev = _safe_component(str(hello.get("dev", "")), "unknown")
+                        # 同一连接上重发 HELLO:设备端重启了会话。先把上一段收尾,
+                        # 否则旧文件句柄一直开着,还会留下永远不写 meta 的空会话目录。
+                        if session is not None:
+                            prev = session.finish()
+                            print(f"[resync] dev={session.dev} 上一会话未正常 END,已收尾 {prev}",
+                                  flush=True)
                         session = Session(dev)
                         session.set_hello(hello)
                         print(f"[hello] peer={peer} dev={dev} {hello}", flush=True)

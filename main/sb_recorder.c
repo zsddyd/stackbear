@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sb_diag.h"
 #include "sb_opus.h"
 #include "sb_uplink.h"
 #include "sb_vad.h"
@@ -42,16 +43,19 @@ static void recorder_task(void *arg)
     int fill = 0;  // opus 帧内已累计的采样数
     if (bsp_audio_init() != ESP_OK) {
         ESP_LOGE(TAG, "音频初始化失败,录音任务退出");
+        g_sb_diag.rec_err = SB_REC_ERR_AUDIO_INIT;
         s_running = false;
         vTaskDelete(NULL);
         return;
     }
     if (bsp_audio_set_format(SB_OPUS_RATE, 16, 1) != ESP_OK) {
         ESP_LOGE(TAG, "音频格式设置失败");
+        g_sb_diag.rec_err = SB_REC_ERR_AUDIO_FORMAT;
         s_running = false;
         vTaskDelete(NULL);
         return;
     }
+    g_sb_diag.rec_err = SB_REC_OK;
 
     while (s_running) {
         if (s_paused) {
@@ -98,6 +102,7 @@ esp_err_t sb_recorder_start(void)
         return ESP_OK;
     }
     if (sb_opus_init() != ESP_OK) {
+        g_sb_diag.rec_err = SB_REC_ERR_OPUS_INIT;
         return ESP_FAIL;
     }
     s_running = true;
@@ -106,6 +111,7 @@ esp_err_t sb_recorder_start(void)
                                5, s_stack, &s_tcb);
     if (s_task == NULL) {
         s_running = false;
+        g_sb_diag.rec_err = SB_REC_ERR_TASK;
         sb_opus_deinit();
         return ESP_ERR_NO_MEM;
     }

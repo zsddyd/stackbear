@@ -3,6 +3,7 @@
 
 #include "esp_log.h"
 #include "opus.h"
+#include "sb_diag.h"
 
 static const char *TAG = "sb_opus";
 
@@ -16,6 +17,7 @@ esp_err_t sb_opus_init(void)
     }
     // VOIP 模式针对语音优化;单声道 16 kHz,60 ms 帧(960 采样)。
     s_enc = opus_encoder_create(SB_OPUS_RATE, 1, OPUS_APPLICATION_VOIP, &s_err);
+    g_sb_diag.opus_err = s_err;
     if (s_enc == NULL || s_err != OPUS_OK) {
         ESP_LOGE(TAG, "opus_encoder_create 失败: %d", s_err);
         s_enc = NULL;
