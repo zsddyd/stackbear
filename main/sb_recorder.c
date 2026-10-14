@@ -57,6 +57,15 @@ static void recorder_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    // 音频(I2S DMA)先拿内存,再建 Opus 编码器。反过来会让 25 KB 的编码器占用
+    // 内部 DMA 可用内存,导致 i2s_alloc_dma_desc 报 ESP_ERR_NO_MEM、录音初始化失败。
+    if (sb_opus_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Opus 编码器初始化失败,录音任务退出");
+        g_sb_diag.rec_err = SB_REC_ERR_OPUS_INIT;
+        s_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
     g_sb_diag.rec_err = SB_REC_OK;
 
     while (s_running) {
@@ -103,10 +112,6 @@ esp_err_t sb_recorder_start(void)
     if (s_running) {
         return ESP_OK;
     }
-    if (sb_opus_init() != ESP_OK) {
-        g_sb_diag.rec_err = SB_REC_ERR_OPUS_INIT;
-        return ESP_FAIL;
-    }
     s_running = true;
     s_paused = false;
     s_task = xTaskCreateStatic(recorder_task, "sb_rec", REC_TASK_STACK_WORDS, NULL,
@@ -114,7 +119,6 @@ esp_err_t sb_recorder_start(void)
     if (s_task == NULL) {
         s_running = false;
         g_sb_diag.rec_err = SB_REC_ERR_TASK;
-        sb_opus_deinit();
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "录音任务已启动");

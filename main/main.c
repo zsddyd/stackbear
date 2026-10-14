@@ -40,6 +40,7 @@ typedef struct {
 static QueueHandle_t s_input_queue;
 static volatile bool s_input_ready;
 static volatile bool s_setup_mode;
+static volatile bool s_uplink_started;
 static sb_screen_t s_screen = SB_SCREEN_HOME;
 
 static void ui_show_locked(sb_screen_t screen)
@@ -150,11 +151,19 @@ static void app_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        // 先起录音任务(它负责音频/I2S DMA 与 Opus 编码器的内存分配),再连 WiFi。
+        // 顺序反了的话,WiFi 会先吃掉内部内存,音频 DMA 分配失败。
+        if (!sb_recorder_running()) {
+            sb_recorder_start();
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
         if (sb_net_state() == SB_NET_UP) {
-            if (!sb_recorder_running()) {
+            // 只在第一次连上时启动上行并开会话;每秒重复 begin_session 会让设备
+            // 反复重发 HELLO。
+            if (!s_uplink_started) {
                 sb_uplink_start();
                 sb_uplink_begin_session();
-                sb_recorder_start();
+                s_uplink_started = true;
             }
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
@@ -172,12 +181,6 @@ void app_main(void)
     ESP_LOGI(TAG, "stackbear 全天候录音卡启动");
     if (sb_config_init() != ESP_OK) {
         ESP_LOGE(TAG, "配置初始化失败");
-    }
-    // Opus 编码器要在 WiFi/LVGL 之前创建:它是常驻的大块连续内存(约 25 KB),
-    // 等网络和界面起来后堆只剩 ~45 KB 且已碎片化,opus_encoder_create 会以
-    // OPUS_ALLOC_FAIL(-7) 失败。抢在启动早期分配最稳妥。
-    if (sb_opus_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Opus 编码器早期初始化失败,录音将不可用");
     }
     bsp_i2c_init();
 
