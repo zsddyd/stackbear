@@ -65,25 +65,29 @@ static int connect_to_server(void)
     return fd;
 }
 
-static void send_frame(int fd, uint8_t type, uint8_t flags, uint16_t seq,
+// 返回 false 表示这条连接已经不可用(对端关闭/发不出去),调用方应重连。
+// 之前这里静默吞掉发送错误,导致服务端重启后设备只是"往死 socket 里写",
+// 永远不会重新建立连接。
+static bool send_frame(int fd, uint8_t type, uint8_t flags, uint16_t seq,
                        const uint8_t *payload, uint16_t len)
 {
     uint8_t buf[SB_PROTO_MAX_FRAME];
     const size_t n = sb_proto_encode(buf, sizeof(buf), type, flags, seq, payload, len);
     if (n == 0) {
-        return;
+        return true;  // 编码失败(不该发生)不是连接问题
     }
     size_t off = 0;
     while (off < n) {
         const int w = send(fd, buf + off, n - off, 0);
         if (w <= 0) {
-            return;  // 发送失败,交给上层重连
+            return false;
         }
         off += (size_t)w;
     }
+    return true;
 }
 
-static void send_hello(int fd)
+static bool send_hello(int fd)
 {
     const sb_config_t *cfg = sb_config_get();
     g_sb_diag.free_heap = esp_get_free_heap_size();
@@ -96,10 +100,11 @@ static void send_hello(int fd)
                            (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS),
                            (int)g_sb_diag.rec_err, (int)g_sb_diag.opus_err,
                            (unsigned)g_sb_diag.free_heap);
-    if (n > 0) {
-        send_frame(fd, SB_FRAME_HELLO, 0, 0, (const uint8_t *)hello, (uint16_t)n);
-    }
     s_seq = 0;
+    if (n <= 0) {
+        return true;
+    }
+    return send_frame(fd, SB_FRAME_HELLO, 0, 0, (const uint8_t *)hello, (uint16_t)n);
 }
 
 static void drain_acks(int fd)
@@ -132,22 +137,41 @@ static void uplink_task(void *arg)
             s_need_hello = true;
         }
         if (s_need_hello) {
-            send_hello(fd);
+            if (!send_hello(fd)) {
+                close(fd);
+                fd = -1;
+                s_state = SB_UL_ERROR;
+                vTaskDelay(pdMS_TO_TICKS(SB_UL_CONNECT_WAIT_MS));
+                continue;
+            }
             s_need_hello = false;
         }
 
         if (xQueueReceive(s_queue, &item, pdMS_TO_TICKS(200)) == pdTRUE) {
-            send_frame(fd, SB_FRAME_AUDIO, 0, s_seq++, item.data, item.len);
+            if (!send_frame(fd, SB_FRAME_AUDIO, 0, s_seq, item.data, item.len)) {
+                close(fd);
+                fd = -1;
+                s_state = SB_UL_ERROR;
+                vTaskDelay(pdMS_TO_TICKS(SB_UL_CONNECT_WAIT_MS));
+                continue;
+            }
+            s_seq++;
             s_sent++;
             drain_acks(fd);
         } else {
             // 空闲时发一个 PING 保活,让 NAT/热点不要过早断链。
-            send_frame(fd, SB_FRAME_PING, 0, s_seq, NULL, 0);
+            if (!send_frame(fd, SB_FRAME_PING, 0, s_seq, NULL, 0)) {
+                close(fd);
+                fd = -1;
+                s_state = SB_UL_ERROR;
+                vTaskDelay(pdMS_TO_TICKS(SB_UL_CONNECT_WAIT_MS));
+                continue;
+            }
             drain_acks(fd);
         }
 
         if (s_end_requested && uxQueueMessagesWaiting(s_queue) == 0) {
-            send_frame(fd, SB_FRAME_END, SB_FLAG_LAST, s_seq, NULL, 0);
+            (void)send_frame(fd, SB_FRAME_END, SB_FLAG_LAST, s_seq, NULL, 0);
             drain_acks(fd);
             close(fd);
             fd = -1;
