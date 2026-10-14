@@ -35,6 +35,14 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_key_guard.c -o "${test_dir}/test_key_guard"
     "${test_dir}/test_key_guard"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_sb_proto.c main/sb_proto.c \
+        -o "${test_dir}/test_sb_proto"
+    "${test_dir}/test_sb_proto"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_sb_vad.c main/sb_vad.c \
+        -o "${test_dir}/test_sb_vad"
+    "${test_dir}/test_sb_vad"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -70,6 +78,8 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_install_passport_skills.py
+    PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_protocol.py
+    PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_server.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

@@ -1,0 +1,35 @@
+// main/sb_net.h —— WiFi 连接与 SoftAP 配网。
+#pragma once
+
+#include "esp_err.h"
+#include <stdbool.h>
+
+typedef enum {
+    SB_NET_DOWN = 0,   // 未连接
+    SB_NET_CONNECTING,
+    SB_NET_UP,         // 已连上热点并拿到 IP
+} sb_net_state_t;
+
+// 初始化 netif/事件/默认事件循环(幂等)。
+esp_err_t sb_net_init(void);
+
+// 以 STA 连接指定热点。已连接则先断开。失败返回错误。
+esp_err_t sb_net_sta_connect(const char *ssid, const char *pass);
+void sb_net_sta_disconnect(void);
+sb_net_state_t sb_net_state(void);
+const char *sb_net_ip(void);   // 未连接返回 ""
+
+// 进入配网模式:开 SoftAP + 本地配置网页。
+// 手机连上 SoftAP 后访问 http://192.168.4.1/ ,网页里选择热点并输入密码;
+// 设备验证能连上后才写入 NVS,然后关闭 SoftAP/网页。
+// 返回 ESP_OK 表示配网服务已启动(不代表已配网成功)。
+esp_err_t sb_net_provision_start(void);
+
+// 关闭配网服务(SoftAP + HTTP)。
+esp_err_t sb_net_provision_stop(void);
+
+// 配网结果:0=进行中,1=成功(凭据已保存),-1=用户取消/超时。
+int sb_net_provision_result(void);
+
+// 让配网页重新扫描周边热点。
+void sb_net_request_scan(void);

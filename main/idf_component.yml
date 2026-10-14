@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.5.3,<5.6.0"
+  # libopus(16 kHz 单声道 Opus 编码)。它是应用层编解码依赖,不属于 BSP,
+  # 因此登记在 main 而不是 components/bsp。首次构建由组件管理器解析并写入
+  # 根目录 dependencies.lock。
+  78/esp-opus: "^1.0.5"

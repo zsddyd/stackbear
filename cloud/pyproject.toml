@@ -1,0 +1,12 @@
+[project]
+name = "stackbear"
+version = "0.2.0"
+description = "AI Passport 全天候录音卡 —— 云端接收服务(私有协议音频流落盘)"
+requires-python = ">=3.11"
+dependencies = []
+
+# 纯标准库实现,不需要第三方依赖;uv 只用来建环境与跑命令。
+# 运行(ECS 上):
+#   uv run python -m stackbear.server --host 0.0.0.0 --port 18080
+# 或:
+#   uv run --app-dir src python -m stackbear.server
