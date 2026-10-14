@@ -15,6 +15,12 @@ repository, logs or session metadata:
     STACKBEAR_ASR_API_KEY    bearer token for the endpoint
     STACKBEAR_ASR_TIMEOUT    request timeout in seconds (default: 120)
     STACKBEAR_ASR_PROMPT     override the transcription instruction
+    STACKBEAR_ASR_AUDIO_MODE inline (default) or url; "url" hands the model a
+                             link to fetch instead of inline base64
+    STACKBEAR_ASR_PUBLIC_URL base URL the model can reach, e.g.
+                             http://8.137.56.181:18080
+    STACKBEAR_ASR_AUDIO_PART which content part to use for URL mode:
+                             input_audio_url (default) | file_url | file_base64
 
 Adding a vendor means adding one class below and registering it in PROVIDERS;
 nothing else in the receiver changes.
@@ -56,6 +62,9 @@ class AsrConfig:
     api_key: str = ""
     timeout: float = 120.0
     prompt: str = DEFAULT_PROMPT
+    audio_mode: str = "inline"
+    public_url: str = ""
+    audio_part: str = "input_audio_url"
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -69,13 +78,17 @@ class AsrConfig:
             api_key=source.get("STACKBEAR_ASR_API_KEY", ""),
             timeout=float(source.get("STACKBEAR_ASR_TIMEOUT", "120")),
             prompt=source.get("STACKBEAR_ASR_PROMPT", DEFAULT_PROMPT),
+            audio_mode=source.get("STACKBEAR_ASR_AUDIO_MODE", "inline").lower(),
+            public_url=source.get("STACKBEAR_ASR_PUBLIC_URL", "").rstrip("/"),
+            audio_part=source.get("STACKBEAR_ASR_AUDIO_PART", "input_audio_url").lower(),
         )
 
     def describe(self) -> str:
         """Human-readable identity for logs. Never includes the key."""
         key_state = "set" if self.api_key else "missing"
         return (f"provider={self.provider} vendor={self.vendor} model={self.model or '(unset)'} "
-                f"base_url={self.base_url} api_key={key_state}")
+                f"base_url={self.base_url} api_key={key_state} "
+                f"audio_mode={self.audio_mode} part={self.audio_part}")
 
 
 @dataclass
@@ -98,7 +111,8 @@ class Provider:
         # Injected by tests so the HTTP layer is not hit; None uses urllib.
         self._transport = transport or _http_post_json
 
-    def transcribe(self, wav: bytes, *, language: str | None = None) -> Transcript:  # pragma: no cover
+    def transcribe(self, wav: bytes, *, language: str | None = None,
+                   audio_url: str | None = None) -> Transcript:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -126,7 +140,34 @@ class OpenRouterProvider(Provider):
 
     name = "openrouter"
 
-    def transcribe(self, wav: bytes, *, language: str | None = None) -> Transcript:
+    def _audio_part(self, wav: bytes, audio_url: str | None) -> dict:
+        """Build the audio content part.
+
+        Some models only see the audio when they can fetch a URL themselves, so
+        URL mode is selectable; the two URL shapes are kept switchable because
+        gateways disagree on which one they accept.
+        """
+        cfg = self.config
+        if cfg.audio_mode == "url":
+            if not audio_url:
+                raise ProviderError(
+                    "audio_mode=url requires a reachable URL: set STACKBEAR_ASR_PUBLIC_URL "
+                    "and let the receiver publish the file"
+                )
+            if cfg.audio_part == "file_url":
+                return {"type": "file", "file": {"filename": "audio.wav", "file_data": audio_url}}
+            return {"type": "input_audio",
+                    "input_audio": {"url": audio_url, "format": "wav"}}
+        encoded = base64.b64encode(wav).decode("ascii")
+        if cfg.audio_part == "file_base64":
+            return {"type": "file",
+                    "file": {"filename": "audio.wav",
+                             "file_data": f"data:audio/wav;base64,{encoded}"}}
+        return {"type": "input_audio",
+                "input_audio": {"data": encoded, "format": "wav"}}
+
+    def transcribe(self, wav: bytes, *, language: str | None = None,
+                   audio_url: str | None = None) -> Transcript:
         cfg = self.config
         if not cfg.api_key:
             raise ProviderError(
@@ -138,6 +179,7 @@ class OpenRouterProvider(Provider):
         instruction = cfg.prompt
         if language:
             instruction += f" The audio is in {language}."
+        audio = self._audio_part(wav, audio_url)
         payload = {
             "model": cfg.model,
             "messages": [
@@ -145,13 +187,7 @@ class OpenRouterProvider(Provider):
                     "role": "user",
                     "content": [
                         {"type": "text", "text": instruction},
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": base64.b64encode(wav).decode("ascii"),
-                                "format": "wav",
-                            },
-                        },
+                        audio,
                     ],
                 }
             ],

@@ -33,6 +33,10 @@ from . import __version__, protocol
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA = pathlib.Path(os.environ.get("STACKBEAR_DATA", ROOT / "data"))
+# 转写时临时对外暴露的音频放在这里:同一时刻只允许存在一个文件,避免把整个
+# data/ 目录变成可下载的。
+SHARE_DIR = DATA / ".share"
+SHARE_TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
 QUOTA_BYTES = int(os.environ.get("STACKBEAR_QUOTA_BYTES", 4 * 1024 * 1024 * 1024))
 IDLE_TIMEOUT_S = float(os.environ.get("STACKBEAR_IDLE_TIMEOUT", 120.0))
 
@@ -146,6 +150,32 @@ def _http_response(body: bytes, status: str = "200 OK", ctype: str = "applicatio
     return head + body
 
 
+def _serve_share(path: str) -> tuple[bytes, str, str]:
+    """Serve exactly the one currently shared audio file.
+
+    Refuses when the share directory does not hold precisely the requested file,
+    so a stale or renamed file can never be fetched and a second file can never
+    be exposed by accident.
+    """
+    # The public URL carries a .wav suffix (friendlier to fetchers); the file on
+    # disk is <token>.wav, so strip it before validating the token.
+    name = path[len("/a/"):]
+    token = name[:-4] if name.endswith(".wav") else name
+    if not SHARE_TOKEN_RE.fullmatch(token or ""):
+        return b'{"error":"bad token"}', "400 Bad Request", "application/json"
+    wanted = SHARE_DIR / f"{token}.wav"
+    try:
+        entries = [p for p in SHARE_DIR.iterdir() if p.is_file()] if SHARE_DIR.is_dir() else []
+    except OSError:
+        entries = []
+    if len(entries) != 1 or entries[0] != wanted or not wanted.is_file():
+        return b'{"error":"not found"}', "404 Not Found", "application/json"
+    try:
+        return wanted.read_bytes(), "200 OK", "audio/wav"
+    except OSError:
+        return b'{"error":"unreadable"}', "500 Internal Server Error", "application/json"
+
+
 async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """处理状态查询 / 兼容旧心跳上传。请求很小,只读一次。"""
     try:
@@ -174,6 +204,11 @@ async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asy
                 payload = {"ok": True, "ts": time.time()}
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             writer.write(_http_response(body))
+        elif method in ("GET", "HEAD") and path.startswith("/a/"):
+            # Expose exactly the one audio file registered for transcription, so a
+            # model that needs to fetch the audio itself can be handed a URL.
+            body, status, ctype = _serve_share(path)
+            writer.write(_http_response(body, status, ctype))
         elif method == "POST" and path == "/upload":
             # 兼容早期 M1 心跳自测:POST /upload?dev=&seq=
             params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)

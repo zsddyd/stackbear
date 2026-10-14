@@ -14,14 +14,39 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import pathlib
+import secrets
 import struct
 import sys
 import wave
 
 from . import adpcm, providers
+
+
+@contextlib.contextmanager
+def publish(wav: bytes, public_url: str):
+    """Expose exactly this one WAV on the receiver's HTTP port for the duration
+    of the call, then remove it.
+
+    Only one file is ever present in the share directory: anything left from an
+    earlier run is deleted first, so the endpoint can never serve two files.
+    """
+    from .server import SHARE_DIR
+
+    SHARE_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in SHARE_DIR.iterdir():
+        if stale.is_file():
+            stale.unlink(missing_ok=True)
+    token = secrets.token_hex(16)
+    path = SHARE_DIR / f"{token}.wav"
+    path.write_bytes(wav)
+    try:
+        yield f"{public_url.rstrip('/')}/a/{token}.wav"
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def wav_bytes(samples: list[int]) -> bytes:
@@ -94,13 +119,26 @@ def main() -> int:
     provider = providers.get_provider(config)
     print(f"using {config.describe()}", file=sys.stderr)
 
+    if config.audio_mode == "url" and not config.public_url:
+        print("audio_mode=url requires STACKBEAR_ASR_PUBLIC_URL", file=sys.stderr)
+        return 2
+
+    def run(span_samples: list[int]) -> providers.Transcript:
+        """Transcribe one span, publishing it over HTTP first when the provider
+        is configured to hand the model a URL instead of inline audio."""
+        blob = wav_bytes(span_samples)
+        if config.audio_mode == "url":
+            with publish(blob, config.public_url) as url:
+                print(f"published {len(blob)} bytes at {url}", file=sys.stderr)
+                return provider.transcribe(blob, language=args.language, audio_url=url)
+        return provider.transcribe(blob, language=args.language)
+
     results: list[dict] = []
     try:
         spans = segment_slices(meta, len(samples)) if args.per_segment else []
         if spans:
             for index, (start, end) in enumerate(spans):
-                transcript = provider.transcribe(wav_bytes(samples[start:end]),
-                                                 language=args.language)
+                transcript = run(samples[start:end])
                 start_ms = start * 1000 // adpcm.SAMPLE_RATE
                 results.append({"index": index, "start_ms": start_ms,
                                 "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
@@ -110,7 +148,7 @@ def main() -> int:
         else:
             if args.per_segment:
                 print("no segment metadata; transcribing the whole session", file=sys.stderr)
-            transcript = provider.transcribe(wav_bytes(samples), language=args.language)
+            transcript = run(samples)
             results.append({"index": 0, "start_ms": 0,
                             "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
                             "text": transcript.text,

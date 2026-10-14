@@ -98,11 +98,40 @@ async def _run() -> None:
 
 def main() -> int:
     asyncio.run(_run())
+    _share_tests()
     if FAILURES:
         print(f"test_server: {FAILURES} failure(s)")
         return 1
     print("test_server: PASS")
     return 0
+
+
+def _share_tests() -> None:
+    """The transcription share endpoint must expose exactly one file."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        server.SHARE_DIR = pathlib.Path(tmp) / ".share"
+        server.SHARE_DIR.mkdir(parents=True)
+
+        # Nothing shared yet -> 404, even for a well-formed token.
+        body, status, _ = server._serve_share("/a/" + "a" * 32)
+        check(status.startswith("404"), f"empty share -> 404, got {status}")
+
+        # A malformed token is rejected outright.
+        _, status, _ = server._serve_share("/a/../etc/passwd")
+        check(status.startswith("400"), f"bad token -> 400, got {status}")
+
+        token = "b" * 32
+        (server.SHARE_DIR / f"{token}.wav").write_bytes(b"RIFFdata")
+        body, status, ctype = server._serve_share(f"/a/{token}.wav")
+        check(status.startswith("200") and body == b"RIFFdata", "shares the file")
+        check(ctype == "audio/wav", f"content type {ctype}")
+
+        # A second file must make the endpoint refuse rather than guess.
+        (server.SHARE_DIR / ("c" * 32 + ".wav")).write_bytes(b"RIFFother")
+        _, status, _ = server._serve_share(f"/a/{token}.wav")
+        check(status.startswith("404"), f"two shared files -> 404, got {status}")
 
 
 if __name__ == "__main__":
