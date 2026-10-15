@@ -37,6 +37,10 @@ DATA = pathlib.Path(os.environ.get("STACKBEAR_DATA", ROOT / "data"))
 # data/ 目录变成可下载的。
 SHARE_DIR = DATA / ".share"
 SHARE_TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
+# OTA images and the manifest the device polls. Populated by the build/deploy
+# step; empty by default so a device that asks early just gets a 404.
+FIRMWARE_DIR = pathlib.Path(os.environ.get("STACKBEAR_FIRMWARE",
+                                           ROOT / "firmware"))
 QUOTA_BYTES = int(os.environ.get("STACKBEAR_QUOTA_BYTES", 4 * 1024 * 1024 * 1024))
 IDLE_TIMEOUT_S = float(os.environ.get("STACKBEAR_IDLE_TIMEOUT", 120.0))
 # Transcribe automatically when a session ends. On by default; set
@@ -182,6 +186,26 @@ def _serve_share(path: str) -> tuple[bytes, str, str]:
         return b'{"error":"unreadable"}', "500 Internal Server Error", "application/json"
 
 
+def _serve_firmware(path: str) -> tuple[bytes, str, str]:
+    """Serve the OTA manifest or an image. Only plain names are accepted, so a
+    request can never escape the firmware directory."""
+    name = path[len("/firmware/"):]
+    if name == "latest.json":
+        try:
+            body = (FIRMWARE_DIR / "latest.json").read_bytes()
+        except OSError:
+            return b'{"error":"no firmware published"}', "404 Not Found", "application/json"
+        return body, "200 OK", "application/json"
+    if name.startswith("app-") and name.endswith(".bin") and \
+            pathlib.PurePosixPath(name).name == name:
+        try:
+            body = (FIRMWARE_DIR / name).read_bytes()
+        except OSError:
+            return b'{"error":"not found"}', "404 Not Found", "application/json"
+        return body, "200 OK", "application/octet-stream"
+    return b'{"error":"not found"}', "404 Not Found", "application/json"
+
+
 async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """处理状态查询 / 兼容旧心跳上传。请求很小,只读一次。"""
     try:
@@ -214,6 +238,10 @@ async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asy
             # Expose exactly the one audio file registered for transcription, so a
             # model that needs to fetch the audio itself can be handed a URL.
             body, status, ctype = _serve_share(path)
+            writer.write(_http_response(body, status, ctype))
+        elif method in ("GET", "HEAD") and path.startswith("/firmware/"):
+            # OTA: the manifest and the image the device installs.
+            body, status, ctype = _serve_firmware(path)
             writer.write(_http_response(body, status, ctype))
         elif method == "POST" and path == "/upload":
             # 兼容早期 M1 心跳自测:POST /upload?dev=&seq=

@@ -48,8 +48,35 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.artifact_name.outputs.name }}
-          path: build/FoloToy-AI-Passport-full.bin
+          path: |
+            build/FoloToy-AI-Passport-full.bin
+            build/FoloToy-AI-Passport-ota.bin
+            build/ota-latest.json
           if-no-files-found: error
+
+      # Push the OTA image and manifest to the receiver so the device can pull
+      # them. Skipped unless the ECS credentials are configured.
+      - name: Publish OTA package to the ECS
+        if: ${{ github.event_name == 'workflow_dispatch' && secrets.ECS_HOST != '' }}
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          ECS_PASSWORD: ${{ secrets.ECS_PASSWORD }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          pub="$(python3 -c "import json;print(json.load(open('build/ota-latest.json'))['published_name'])")"
+          sshpass -p "$ECS_PASSWORD" scp -o StrictHostKeyChecking=accept-new \
+            "build/FoloToy-AI-Passport-ota.bin" "$ECS_USER@$ECS_HOST:/tmp/$pub"
+          sshpass -p "$ECS_PASSWORD" scp -o StrictHostKeyChecking=accept-new \
+            build/ota-latest.json "$ECS_USER@$ECS_HOST:/tmp/ota-latest.json"
+          # Move into place atomically-ish: the image first, then the manifest,
+          # so a device polling mid-copy never sees a manifest without an image.
+          sshpass -p "$ECS_PASSWORD" ssh -o StrictHostKeyChecking=accept-new \
+            "$ECS_USER@$ECS_HOST" \
+            "mkdir -p ~/Software/stackbear/firmware && \
+             mv /tmp/$pub ~/Software/stackbear/firmware/$pub && \
+             mv /tmp/ota-latest.json ~/Software/stackbear/firmware/latest.json && \
+             ls -l ~/Software/stackbear/firmware"
 
   release:
     if: github.ref_type == 'tag'

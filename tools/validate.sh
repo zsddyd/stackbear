@@ -91,6 +91,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_providers.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_autotranscribe.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_server.py
+    PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }
@@ -118,6 +119,14 @@ run_firmware_checks() (
     install -m 0644 \
         "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
         "${repo_root}/build/FoloToy-AI-Passport-full.bin"
+    # OTA package: the app image alone (it is what gets written into the spare
+    # slot), plus a manifest the device polls. The sha256 covers the exact bytes
+    # the device will install.
+    install -m 0644 "${validation_build_dir}/FoloToy-AI-Passport.bin" \
+        "${repo_root}/build/FoloToy-AI-Passport-ota.bin"
+    python3 tools/make_ota_manifest.py \
+        "${repo_root}/build/FoloToy-AI-Passport-ota.bin" \
+        "${repo_root}/build/ota-latest.json"
     echo "Firmware build: PASS"
 )
 
