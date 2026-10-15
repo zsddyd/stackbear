@@ -24,6 +24,12 @@ repository, logs or session metadata:
 
 Adding a vendor means adding one class below and registering it in PROVIDERS;
 nothing else in the receiver changes.
+
+Two providers are registered:
+  openrouter  chat completions with an `input_audio` part (default)
+  opencode-go OpenCode's Go subscription, which speaks an OpenAI-compatible
+              chat API at https://opencode.ai/inference/go/v1 and offers
+              audio-capable models (MiMo omni, Gemini argon, Muse Spark)
 """
 
 from __future__ import annotations
@@ -37,12 +43,20 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 DEFAULT_PROVIDER = "openrouter"
-DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+PRESETS = {
+    # name: (base_url, vendor label, default model, key env var)
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter", "qwen/qwen3.8-omni-flash",
+                   "STACKBEAR_ASR_API_KEY"),
+    # OpenCode Go: subscription access to, among others, audio-capable models.
+    # mimo-v2.6-flash is the fast/cheap omni option, best fit for transcription.
+    "opencode-go": ("https://opencode.ai/inference/go/v1", "opencode-go", "mimo-v2.6-flash",
+                    "OPENCODE_API_KEY"),
+}
+DEFAULT_OPENROUTER_URL, DEFAULT_VENDOR, DEFAULT_MODEL, _ = PRESETS[DEFAULT_PROVIDER]
 # A model that is actually reachable and audio-capable from a mainland-China host
 # was chosen as the default after measuring several candidates: Mistral Voxtral
 # and Qwen omni both transcribe our 16 kHz mono WAV; the Nemotron omni free model
 # drops the audio, and the Google/OpenAI audio models are geo-blocked there.
-DEFAULT_MODEL = "qwen/qwen3.8-omni-flash"
 DEFAULT_PROMPT = (
     "Transcribe the speech in this audio. Reply with the plain transcript only, "
     "without commentary, timestamps or speaker labels."
@@ -70,18 +84,35 @@ class AsrConfig:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "AsrConfig":
         source = os.environ if env is None else env
-        return cls(
+        cfg = cls(
             provider=source.get("STACKBEAR_ASR_PROVIDER", DEFAULT_PROVIDER),
-            vendor=source.get("STACKBEAR_ASR_VENDOR", source.get("STACKBEAR_ASR_PROVIDER", DEFAULT_PROVIDER)),
-            model=source.get("STACKBEAR_ASR_MODEL", DEFAULT_MODEL),
-            base_url=source.get("STACKBEAR_ASR_BASE_URL", DEFAULT_OPENROUTER_URL),
-            api_key=source.get("STACKBEAR_ASR_API_KEY", ""),
+            vendor="",
+            model="",
+            base_url="",
+            api_key="",
             timeout=float(source.get("STACKBEAR_ASR_TIMEOUT", "120")),
             prompt=source.get("STACKBEAR_ASR_PROMPT", DEFAULT_PROMPT),
             audio_mode=source.get("STACKBEAR_ASR_AUDIO_MODE", "inline").lower(),
             public_url=source.get("STACKBEAR_ASR_PUBLIC_URL", "").rstrip("/"),
             audio_part=source.get("STACKBEAR_ASR_AUDIO_PART", "input_audio_url").lower(),
         )
+        # Explicit STACKBEAR_ASR_* values win; the rest come from the preset.
+        cfg.vendor = source.get("STACKBEAR_ASR_VENDOR", "")
+        cfg.model = source.get("STACKBEAR_ASR_MODEL", "")
+        cfg.base_url = source.get("STACKBEAR_ASR_BASE_URL", "")
+        cfg.api_key = source.get("STACKBEAR_ASR_API_KEY", "")
+        cfg.apply_preset(source)
+        return cfg
+
+    def apply_preset(self, env: dict) -> None:
+        """Fill unset fields from the provider's preset, so switching provider is
+        one environment variable and the key variable name follows the vendor."""
+        preset = PRESETS.get(self.provider)
+        base_url, vendor, model, key_env = preset if preset else ("", self.provider, "", "STACKBEAR_ASR_API_KEY")
+        self.vendor = self.vendor or env.get("STACKBEAR_ASR_VENDOR") or vendor
+        self.model = self.model or env.get("STACKBEAR_ASR_MODEL") or model
+        self.base_url = self.base_url or env.get("STACKBEAR_ASR_BASE_URL") or base_url
+        self.api_key = self.api_key or env.get("STACKBEAR_ASR_API_KEY") or env.get(key_env, "")
 
     def describe(self) -> str:
         """Human-readable identity for logs. Never includes the key."""
@@ -130,15 +161,15 @@ def _http_post_json(url: str, data: bytes, headers: dict, timeout: float) -> dic
         raise ProviderError(f"{url} returned non-JSON: {exc}") from exc
 
 
-class OpenRouterProvider(Provider):
-    """OpenRouter chat completions with an audio content part.
+class OpenAiCompatibleProvider(Provider):
+    """A chat-completions endpoint with an audio content part.
 
     The wire shape is the OpenAI-compatible `input_audio` part: base64 data plus
-    a format tag. Any OpenAI-compatible audio endpoint works the same way, so a
-    different vendor usually needs only a different base_url/model.
+    a format tag. OpenRouter and OpenCode Go both speak this shape, so a vendor
+    usually needs only a different base_url/model/key (see PRESETS).
     """
 
-    name = "openrouter"
+    name = "openai-compatible"
 
     def _audio_part(self, wav: bytes, audio_url: str | None) -> dict:
         """Build the audio content part.
@@ -182,6 +213,10 @@ class OpenRouterProvider(Provider):
         audio = self._audio_part(wav, audio_url)
         payload = {
             "model": cfg.model,
+            # Ask the gateway to return real usage accounting (token counts and,
+            # where supported, the actual cost of this call) so spend can be
+            # measured instead of estimated.
+            "usage": {"include": True},
             "messages": [
                 {
                     "role": "user",
@@ -226,7 +261,8 @@ class OpenRouterProvider(Provider):
 
 
 PROVIDERS: dict[str, type[Provider]] = {
-    OpenRouterProvider.name: OpenRouterProvider,
+    "openrouter": OpenAiCompatibleProvider,
+    "opencode-go": OpenAiCompatibleProvider,
 }
 
 

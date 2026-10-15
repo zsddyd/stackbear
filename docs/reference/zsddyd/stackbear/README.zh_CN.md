@@ -78,6 +78,19 @@ STACKBEAR_ASR_BASE_URL  默认 https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
 
+目前注册了两个 provider,预设会补齐地址、厂商标签与一个默认的音频模型,所以切换只需
+一个变量:
+
+| provider | 地址 | 密钥变量 | 默认模型 |
+| --- | --- | --- | --- |
+| `openrouter` | `https://openrouter.ai/api/v1` | `STACKBEAR_ASR_API_KEY` | `qwen/qwen3.8-omni-flash` |
+| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-flash` |
+
+OpenCode Go 订阅按 models.dev 注册表确实包含支持音频输入的模型:`mimo-v2.6-flash`、
+`mimo-v2.6-pro`、`mimo-v2.5`、`gemini-4-argon-contributor`、
+`muse-spark-1.2/1.3-contributor`。注意其文档写明面向编码代理流量,当作实验路径而非
+生产 ASR 通道。
+
 模型实测(国内主机、一段 12.5 秒真机录音,16kHz 单声道 WAV 以 `input_audio` 提交):
 `mistralai/voxtral-small-24b-2507` 与 `qwen/qwen3.8-omni-flash` 都能正确转写;
 `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 虽在音频模型列表里,实际会丢掉音频

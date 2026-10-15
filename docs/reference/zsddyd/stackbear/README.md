@@ -90,6 +90,20 @@ STACKBEAR_ASR_BASE_URL  default: https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
 
+Two providers are registered. Presets supply endpoint, vendor and a default
+audio-capable model, so switching is one variable:
+
+| Provider | Endpoint | Key variable | Default model |
+| --- | --- | --- | --- |
+| `openrouter` | `https://openrouter.ai/api/v1` | `STACKBEAR_ASR_API_KEY` | `qwen/qwen3.8-omni-flash` |
+| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-flash` |
+
+The OpenCode Go subscription reaches audio-capable models per the models.dev
+registry: `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`,
+`gemini-4-argon-contributor`, `muse-spark-1.2/1.3-contributor`. Note the vendor
+documents it as being for coding-agent traffic, so treat it as an experiment
+rather than a production ASR path.
+
 Model notes measured on a mainland-China host with one 12.5 s device recording
 (16 kHz mono WAV sent as an `input_audio` part): `mistralai/voxtral-small-24b-2507`
 and `qwen/qwen3.8-omni-flash` both return a correct transcript;

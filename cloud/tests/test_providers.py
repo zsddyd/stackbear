@@ -81,16 +81,38 @@ def test_language_hint_is_added() -> None:
     check("Chinese" in text, f"language hint not in prompt: {text}")
 
 
-def test_missing_key_and_model_are_reported() -> None:
-    for overrides, needle in (({"STACKBEAR_ASR_API_KEY": ""}, "API key"),
-                              ({"STACKBEAR_ASR_MODEL": ""}, "model")):
+def test_preset_and_override_behaviour() -> None:
+    """Presets fill the blanks (so switching provider is one variable), explicit
+    STACKBEAR_ASR_* values still win, and a missing key is reported clearly."""
+    # opencode-go preset supplies endpoint, vendor and an audio-capable model,
+    # and reads its own key variable.
+    cfg = providers.AsrConfig.from_env({
+        "STACKBEAR_ASR_PROVIDER": "opencode-go",
+        "OPENCODE_API_KEY": "test-key-not-a-secret",
+    })
+    check(cfg.base_url == "https://opencode.ai/inference/go/v1", f"go base_url {cfg.base_url}")
+    check(cfg.model == "mimo-v2.6-flash", f"go default model {cfg.model}")
+    check(cfg.api_key == "test-key-not-a-secret", "go key from OPENCODE_API_KEY")
+    check(cfg.vendor == "opencode-go", f"go vendor {cfg.vendor}")
+    check("test-key" not in cfg.describe(), "describe() must not leak the key")
+
+    # Explicit values override the preset.
+    cfg2 = providers.AsrConfig.from_env({
+        "STACKBEAR_ASR_PROVIDER": "opencode-go",
+        "STACKBEAR_ASR_MODEL": "mimo-v2.6-pro",
+        "OPENCODE_API_KEY": "k",
+    })
+    check(cfg2.model == "mimo-v2.6-pro", f"override model {cfg2.model}")
+
+    # Missing key must be reported, not silently attempted.
+    for provider in ("openrouter", "opencode-go"):
         try:
-            providers.get_provider(_config(**overrides),
-                                   transport=lambda *a: {}).transcribe(b"x")
+            providers.get_provider(providers.AsrConfig.from_env(
+                {"STACKBEAR_ASR_PROVIDER": provider}), transport=lambda *a: {}).transcribe(b"x")
         except providers.ProviderError as exc:
-            check(needle in str(exc), f"error should mention {needle}: {exc}")
+            check("API key" in str(exc), f"{provider}: error should mention API key: {exc}")
         else:
-            check(False, f"missing {needle} must raise")
+            check(False, f"{provider}: missing key must raise")
 
 
 def test_provider_error_and_bad_shape() -> None:
@@ -138,7 +160,7 @@ def main() -> int:
     test_config_from_env()
     test_request_shape()
     test_language_hint_is_added()
-    test_missing_key_and_model_are_reported()
+    test_preset_and_override_behaviour()
     test_provider_error_and_bad_shape()
     test_unknown_provider()
     test_segment_slices_use_meta()

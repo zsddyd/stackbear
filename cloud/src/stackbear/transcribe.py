@@ -83,6 +83,8 @@ def main() -> int:
                         help="decode and report only; do not call the provider")
     parser.add_argument("--write", action="store_true",
                         help="write transcript.txt / transcript.json next to the session")
+    parser.add_argument("--usage", action="store_true",
+                        help="print the gateway's token accounting (for cost tracking)")
     args = parser.parse_args()
 
     session = pathlib.Path(args.path)
@@ -133,6 +135,13 @@ def main() -> int:
                 return provider.transcribe(blob, language=args.language, audio_url=url)
         return provider.transcribe(blob, language=args.language)
 
+    def usage_of(transcript: providers.Transcript) -> dict:
+        """Token accounting as reported by the gateway, for cost tracking."""
+        usage = (transcript.raw or {}).get("usage") or {}
+        return {k: usage.get(k) for k in
+                ("prompt_tokens", "completion_tokens", "total_tokens",
+                 "cost", "cost_details") if k in usage}
+
     results: list[dict] = []
     try:
         spans = segment_slices(meta, len(samples)) if args.per_segment else []
@@ -143,7 +152,10 @@ def main() -> int:
                 results.append({"index": index, "start_ms": start_ms,
                                 "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
                                 "text": transcript.text,
-                                "vendor": transcript.vendor, "model": transcript.model})
+                                "vendor": transcript.vendor, "model": transcript.model,
+                                "usage": usage_of(transcript)})
+                if args.usage:
+                    print(f"usage: {usage_of(transcript)}", file=sys.stderr)
                 print(f"[{start_ms:>7} ms] {transcript.text}")
         else:
             if args.per_segment:
@@ -152,7 +164,10 @@ def main() -> int:
             results.append({"index": 0, "start_ms": 0,
                             "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
                             "text": transcript.text,
-                            "vendor": transcript.vendor, "model": transcript.model})
+                            "vendor": transcript.vendor, "model": transcript.model,
+                            "usage": usage_of(transcript)})
+            if args.usage:
+                print(f"usage: {usage_of(transcript)}", file=sys.stderr)
             print(transcript.text)
     except providers.ProviderError as exc:
         print(f"transcription failed: {exc}", file=sys.stderr)
