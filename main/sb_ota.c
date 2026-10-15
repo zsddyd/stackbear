@@ -15,6 +15,7 @@
 #include "lwip/sockets.h"
 #include "mbedtls/sha256.h"
 #include "sb_config.h"
+#include "sb_json.h"
 #include "sb_recorder.h"
 #include "sb_uplink.h"
 #include "sb_version.h"
@@ -112,27 +113,6 @@ static int http_read_header(int fd, char *buf, size_t cap, int *status)
     return -1;
 }
 
-// 从 JSON 里取一个字符串字段(够用即可,不引入 JSON 依赖)。
-static bool json_str(const char *json, const char *key, char *out, size_t cap)
-{
-    const size_t klen = strlen(key);
-    const char *p = json;
-    while ((p = strstr(p, key)) != NULL) {
-        p += klen;
-        if (*p != '"') {
-            continue;
-        }
-        p++;
-        size_t i = 0;
-        while (*p && *p != '"' && i < cap - 1) {
-            out[i++] = *p++;
-        }
-        out[i] = '\0';
-        return true;
-    }
-    return false;
-}
-
 static bool hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
 {
     if (strlen(hex) < out_len * 2) {
@@ -164,9 +144,9 @@ static esp_err_t fetch_manifest(const sb_config_t *cfg, char *url_out, size_t ur
         int status = 0;
         const int body = http_read_header(fd, buf, sizeof(buf), &status);
         if (body >= 0 && status == 200 &&
-            json_str(buf, "\"url\"", url_out, url_cap) &&
-            json_str(buf, "\"sha256\"", sha_out, sha_cap)) {
-            if (!json_str(buf, "\"version\"", ver_out, ver_cap)) {
+            sb_json_str(buf, "\"url\"", url_out, url_cap) &&
+            sb_json_str(buf, "\"sha256\"", sha_out, sha_cap)) {
+            if (!sb_json_str(buf, "\"version\"", ver_out, ver_cap)) {
                 strlcpy(ver_out, "?", ver_cap);
             }
             err = ESP_OK;
