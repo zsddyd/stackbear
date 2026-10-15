@@ -21,6 +21,9 @@ repository, logs or session metadata:
                              http://8.137.56.181:18080
     STACKBEAR_ASR_AUDIO_PART which content part to use for URL mode:
                              input_audio_url (default) | file_url | file_base64
+    STACKBEAR_ASR_USER_AGENT client identity sent to the endpoint (default
+                             stackbear/0.1); OpenCode Go requires a real client
+                             name because Cloudflare rejects generic SDK agents
 
 Adding a vendor means adding one class below and registering it in PROVIDERS;
 nothing else in the receiver changes.
@@ -79,6 +82,8 @@ class AsrConfig:
     audio_mode: str = "inline"
     public_url: str = ""
     audio_part: str = "input_audio_url"
+    user_agent: str = "stackbear/0.1"
+    session: str = ""
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -95,6 +100,9 @@ class AsrConfig:
             audio_mode=source.get("STACKBEAR_ASR_AUDIO_MODE", "inline").lower(),
             public_url=source.get("STACKBEAR_ASR_PUBLIC_URL", "").rstrip("/"),
             audio_part=source.get("STACKBEAR_ASR_AUDIO_PART", "input_audio_url").lower(),
+            user_agent=source.get("STACKBEAR_ASR_USER_AGENT", "stackbear/0.1"),
+            # OpenCode asks clients to send a stable per-conversation session id.
+            session=source.get("STACKBEAR_ASR_SESSION", "stackbear-transcribe"),
         )
         # Explicit STACKBEAR_ASR_* values win; the rest come from the preset.
         cfg.vendor = source.get("STACKBEAR_ASR_VENDOR", "")
@@ -230,6 +238,10 @@ class OpenAiCompatibleProvider(Provider):
         headers = {
             "Authorization": f"Bearer {cfg.api_key}",
             "Content-Type": "application/json",
+            # Identify as a real client: OpenCode Go sits behind Cloudflare, which
+            # returns error 1010 for generic SDK user agents such as urllib's.
+            "User-Agent": cfg.user_agent,
+            "x-opencode-session": cfg.session,
             # OpenRouter attributes free-tier traffic with these; harmless elsewhere.
             "HTTP-Referer": cfg.extra.get("referer", "https://github.com/zsddyd/stackbear"),
             "X-Title": cfg.extra.get("title", "stackbear"),
@@ -249,6 +261,15 @@ class OpenAiCompatibleProvider(Provider):
             choices = reply["choices"]
             message = choices[0]["message"]
             content = message.get("content")
+            # Reasoning models leave `content` null and put the answer elsewhere;
+            # the field name differs per gateway/model (observed: reasoning_content
+            # on mimo-v2.6, reasoning on mimo-v2.5, text on some others).
+            if not content:
+                for field_name in ("reasoning_content", "reasoning", "text"):
+                    candidate = message.get(field_name)
+                    if isinstance(candidate, str) and candidate.strip():
+                        content = candidate
+                        break
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"unexpected response shape: {str(reply)[:300]}") from exc
         if isinstance(content, list):  # some gateways return content parts

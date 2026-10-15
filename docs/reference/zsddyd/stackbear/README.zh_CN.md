@@ -91,6 +91,17 @@ OpenCode Go 订阅按 models.dev 注册表确实包含支持音频输入的模�
 `muse-spark-1.2/1.3-contributor`。注意其文档写明面向编码代理流量,当作实验路径而非
 生产 ASR 通道。
 
+接 OpenCode Go 有两个容易踩的点:
+
+- Cloudflare 会把通用 SDK 的 User-Agent 拦成 **error 1010**;必须发送真实客户端名
+  (`STACKBEAR_ASR_USER_AGENT`)以及厂商要求的 `x-opencode-session` 头。
+- 它的 MiMo 是推理模型:`content` 返回 null,转写文本落在 `reasoning_content`
+  (mimo-v2.6)或 `reasoning`(mimo-v2.5)里,解析器需要按这些字段回退。
+
+同一段 12.5 秒录音实测:`mimo-v2.6-flash` 与 `mimo-v2.5` 都能正确转写(且优于
+OpenRouter 上同一模型的路由——后者返回空文本);`gemini-4-argon-contributor` 在
+工作区开启"允许会用数据训练的端点"之前拒绝服务。
+
 模型实测(国内主机、一段 12.5 秒真机录音,16kHz 单声道 WAV 以 `input_audio` 提交):
 `mistralai/voxtral-small-24b-2507` 与 `qwen/qwen3.8-omni-flash` 都能正确转写;
 `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 虽在音频模型列表里,实际会丢掉音频

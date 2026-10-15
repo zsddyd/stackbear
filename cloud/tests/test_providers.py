@@ -156,6 +156,24 @@ def test_wav_bytes_header() -> None:
     check(len(blob) == 44 + 200, f"wav size {len(blob)}")
 
 
+def test_reasoning_field_fallbacks() -> None:
+    """Reasoning models leave content null; the answer may arrive as
+    reasoning_content, reasoning or text depending on the gateway."""
+    provider = providers.OpenAiCompatibleProvider(
+        providers.AsrConfig(provider="x", model="m", api_key="k"))
+    cases = (
+        ({"content": "plain"}, "plain"),
+        ({"content": None, "reasoning_content": "rc"}, "rc"),
+        ({"content": None, "reasoning": "r"}, "r"),
+        ({"content": None, "text": "tt"}, "tt"),
+        ({"content": [{"type": "text", "text": "a"}, {"text": "b"}]}, "ab"),
+        ({"content": "c", "reasoning": "r"}, "c"),  # content wins when present
+    )
+    for message, expected in cases:
+        got = provider._parse({"choices": [{"message": message}]}).text
+        check(got == expected, f"{message} -> {got!r}, want {expected!r}")
+
+
 def main() -> int:
     test_config_from_env()
     test_request_shape()
@@ -165,6 +183,7 @@ def main() -> int:
     test_unknown_provider()
     test_segment_slices_use_meta()
     test_wav_bytes_header()
+    test_reasoning_field_fallbacks()
     if FAILURES:
         print(f"test_providers: {FAILURES} failure(s)")
         return 1

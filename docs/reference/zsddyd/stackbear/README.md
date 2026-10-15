@@ -104,6 +104,20 @@ registry: `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`,
 documents it as being for coding-agent traffic, so treat it as an experiment
 rather than a production ASR path.
 
+Two client details are required for OpenCode Go and are easy to miss:
+
+- Cloudflare rejects generic SDK user agents with **error 1010**; the request
+  must send a real client name (`STACKBEAR_ASR_USER_AGENT`) and the
+  `x-opencode-session` header the vendor asks for.
+- Its MiMo models are reasoning models: `content` comes back null and the
+  transcript arrives as `reasoning_content` (mimo-v2.6) or `reasoning`
+  (mimo-v2.5), so the parser falls back through those fields.
+
+Measured on the same 12.5 s recording: `mimo-v2.6-flash` and `mimo-v2.5` both
+transcribe correctly (and better than OpenRouter's route for the same model,
+which returned an empty transcript); `gemini-4-argon-contributor` refuses until
+the workspace enables endpoints that train on request data.
+
 Model notes measured on a mainland-China host with one 12.5 s device recording
 (16 kHz mono WAV sent as an `input_audio` part): `mistralai/voxtral-small-24b-2507`
 and `qwen/qwen3.8-omni-flash` both return a correct transcript;
