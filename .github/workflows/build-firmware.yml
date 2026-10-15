@@ -55,14 +55,18 @@ jobs:
           if-no-files-found: error
 
       # Push the OTA image and manifest to the receiver so the device can pull
-      # them. Skipped unless the ECS credentials are configured.
+      # them. `if` cannot read `secrets`, so the presence check happens in the
+      # script: without ECS_HOST the step simply reports it is skipping.
       - name: Publish OTA package to the ECS
-        if: ${{ github.event_name == 'workflow_dispatch' && secrets.ECS_HOST != '' }}
         env:
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
           ECS_PASSWORD: ${{ secrets.ECS_PASSWORD }}
         run: |
+          if [ -z "${ECS_HOST}" ] || [ -z "${ECS_USER}" ] || [ -z "${ECS_PASSWORD}" ]; then
+            echo "ECS secrets not configured; skipping OTA publish."
+            exit 0
+          fi
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
           pub="$(python3 -c "import json;print(json.load(open('build/ota-latest.json'))['published_name'])")"
           sshpass -p "$ECS_PASSWORD" scp -o StrictHostKeyChecking=accept-new \
