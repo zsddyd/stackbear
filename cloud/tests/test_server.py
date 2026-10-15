@@ -102,11 +102,46 @@ async def _run() -> None:
 def main() -> int:
     asyncio.run(_run())
     _share_tests()
+    _log_tests()
     if FAILURES:
         print(f"test_server: {FAILURES} failure(s)")
         return 1
     print("test_server: PASS")
     return 0
+
+
+def _log_tests() -> None:
+    """Logging must never raise, even with a dead stdout pipe.
+
+    Regression: the service is often piped into `tee`, and when that reader
+    died, print() raised BrokenPipeError. Because BrokenPipeError is an
+    OSError, the connection handlers' `except OSError` swallowed it and closed
+    the device connection immediately after it connected - the device then
+    reconnected every couple of seconds and the UI showed UPLOAD ERR.
+    """
+    import io
+    import contextlib
+
+    class DeadPipe(io.TextIOBase):
+        def write(self, _s: str) -> int:
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self) -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    with contextlib.redirect_stdout(DeadPipe()):
+        try:
+            server.log("[hello] should not raise")
+        except BaseException as exc:  # noqa: BLE001 - the point of the test
+            check(False, f"log() must not raise, got {type(exc).__name__}: {exc}")
+        else:
+            check(True, "log() survived a dead stdout")
+
+    # And it still works normally.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        server.log("hello")
+    check(buf.getvalue() == "hello\n", f"log wrote {buf.getvalue()!r}")
 
 
 def _share_tests() -> None:

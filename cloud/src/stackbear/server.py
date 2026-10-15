@@ -58,6 +58,22 @@ def _safe_component(value: str, default: str) -> str:
     return cleaned[:64] or default
 
 
+def log(message: str) -> None:
+    """Print a diagnostic line, but never let logging break the service.
+
+    This service is often started as `python -m stackbear.server | tee log`.
+    If that pipe's reader dies, every print raises BrokenPipeError - and since
+    BrokenPipeError is an OSError, it used to be swallowed by the connection
+    handlers' broad `except OSError`, closing the device's connection right
+    after it connected. The device then reconnected every couple of seconds and
+    the UI showed UPLOAD ERR. Logging must stay best-effort.
+    """
+    try:
+        print(message, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _dir_bytes(path: pathlib.Path) -> int:
     total = 0
     for f in path.rglob("*"):
@@ -252,7 +268,7 @@ async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asy
             d = DATA / dev
             d.mkdir(parents=True, exist_ok=True)
             (d / f"{seq}.bin").write_bytes(body)
-            print(f"[legacy-upload] dev={dev} seq={seq} bytes={len(body)}", flush=True)
+            log(f"[legacy-upload] dev={dev} seq={seq} bytes={len(body)}")
             writer.write(_http_response(json.dumps({"ok": True, "bytes": len(body)}).encode()))
         else:
             writer.write(_http_response(b'{"error":"not found"}', "404 Not Found"))
@@ -287,12 +303,11 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                         # 否则旧文件句柄一直开着,还会留下永远不写 meta 的空会话目录。
                         if session is not None:
                             prev = session.finish()
-                            print(f"[resync] dev={session.dev} 上一会话未正常 END,已收尾 {prev}",
-                                  flush=True)
+                            log(f"[resync] dev={session.dev} 上一会话未正常 END,已收尾 {prev}")
                             _schedule_transcribe(prev)
                         session = Session(dev)
                         session.set_hello(hello)
-                        print(f"[hello] peer={peer} dev={dev} {hello}", flush=True)
+                        log(f"[hello] peer={peer} dev={dev} {hello}")
                     elif frame.type == protocol.TYPE_AUDIO:
                         if session is None:
                             session = Session("unknown")  # 容错:未见 HELLO 也收
@@ -301,9 +316,9 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                     elif frame.type == protocol.TYPE_END:
                         if session is not None:
                             d = session.finish()
-                            print(f"[end] dev={session.dev} dir={d} "
-                                  f"frames={session.meta['frames']} "
-                                  f"audio_ms={session.meta['audio_ms']}", flush=True)
+                            log(f"[end] dev={session.dev} dir={d} "
+                                f"frames={session.meta['frames']} "
+                                f"audio_ms={session.meta['audio_ms']}")
                             _schedule_transcribe(d)
                             session = None
                         writer.write(protocol.encode(protocol.TYPE_ACK, frame.seq))
@@ -318,7 +333,7 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                     break  # 数据不足
 
             if len(buf) > protocol.MAX_FRAME * 4:
-                print(f"[warn] peer={peer} buffer={len(buf)} 超限,断开", flush=True)
+                log(f"[warn] peer={peer} buffer={len(buf)} 超限,断开")
                 break
 
             chunk = await asyncio.wait_for(reader.read(2048), timeout=IDLE_TIMEOUT_S)
@@ -326,12 +341,12 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                 break
             buf.extend(chunk)
     except (asyncio.TimeoutError, ConnectionError, OSError) as exc:
-        print(f"[close] peer={peer} {type(exc).__name__}", flush=True)
+        log(f"[close] peer={peer} {type(exc).__name__}")
     finally:
         if session is not None:
             d = session.finish()
-            print(f"[finalize] dev={session.dev} dir={d} frames={session.meta['frames']} "
-                  f"(连接未正常 END)", flush=True)
+            log(f"[finalize] dev={session.dev} dir={d} frames={session.meta['frames']} "
+                f"(连接未正常 END)")
             _schedule_transcribe(d)
         writer.close()
         try:
@@ -377,11 +392,10 @@ def _transcribe_worker(session_dir: pathlib.Path) -> None:
               "segments": len(lines), "chars": sum(len(r["text"]) for r in lines),
               "dropped": len(payload.get("errors", [])),
               "usage": [r.get("usage") for r in lines]})
-        print(f"[asr] {session_dir} ok model={payload['model']} segments={len(lines)}",
-              flush=True)
+        log(f"[asr] {session_dir} ok model={payload['model']} segments={len(lines)}")
     except Exception as exc:  # noqa: BLE001 - reported, never fatal to the service
         note({"ok": False, "error": str(exc)})
-        print(f"[asr] {session_dir} failed: {exc}", flush=True)
+        log(f"[asr] {session_dir} failed: {exc}")
 
 
 def _schedule_transcribe(session_dir: pathlib.Path) -> None:
@@ -422,7 +436,7 @@ async def serve(host: str, port: int) -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     server = await asyncio.start_server(_handler, host=host, port=port)
     addrs = ", ".join(sorted({str(s.getsockname()) for s in server.sockets}))
-    print(f"stackbear v{__version__} listening on {addrs} (data={DATA})", flush=True)
+    log(f"stackbear v{__version__} listening on {addrs} (data={DATA})")
     async with server:
         await server.serve_forever()
 
@@ -435,7 +449,7 @@ def main() -> None:
     try:
         asyncio.run(serve(args.host, args.port))
     except KeyboardInterrupt:
-        print("bye", flush=True)
+        log("bye")
 
 
 if __name__ == "__main__":

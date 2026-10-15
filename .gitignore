@@ -5,6 +5,11 @@ managed_components/
 .vscode/
 .idea/
 
+# Python bytecode: the cloud service runs from source and these do not belong
+# in the repository.
+__pycache__/
+*.pyc
+
 # Generated repository-local links; canonical skill sources live in skills/.
 /.agents/skills/passport-develop
 /.agents/skills/passport-setup
