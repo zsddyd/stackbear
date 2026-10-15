@@ -25,18 +25,38 @@
                                                               |
                                                               v
 [ECS 18080] asyncio 接收 -> data/<设备>/<会话>/audio.adpcm + meta.json
+                                |
+                                +-> 自动转写(按 VAD 分段)
 ```
 
 - 固件入口 `main/main.c`;界面 `main/sb_ui.c`;录音链路 `main/sb_recorder.c`;
   编解码 `main/sb_adpcm.c`;分帧 `main/sb_proto.c`;VAD `main/sb_vad.c`;
   WiFi/配网 `main/sb_net.c` 与 `main/sb_net_web.c`;上行 `main/sb_uplink.c`;
-  NVS 配置 `main/sb_config.c`。
+  NVS 配置 `main/sb_config.c`;离线队列 `main/sb_cache.c`;OTA `main/sb_ota.c`;
+  页面层级 `main/sb_nav.c`;构建信息 `main/sb_version.c`。
 - 接收端工程在 `cloud/`,在 ECS 上用 `uv` 运行:
-  `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`。
+  `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`
+  (或 `./run_server.sh`,日志直接写文件)。
 - 音频格式:IMA-ADPCM,4bit,16kHz 单声道,每个 60ms 帧一个自包含块
   (`[2 字节大端长度][4 字节块头 + nibble]`),约 7.8 KB/s。
 - 分段边界跟随音频一起走:每个 VAD 语音段的第一块在 AUDIO 帧上置 `SEG_START` 标志,
   接收端把每段的起始偏移与帧数记进 `meta.json`,便于按句提交转写。
+
+### 界面层级
+
+```text
+HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
+ └ STATUS       分组菜单;每行右侧带一行摘要
+     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+     ├ RECORDER  Recording / Segments / Sent / Dropped
+     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     └ STORAGE   Cache / Size / Used / Pending / Dropped
+```
+
+按键统一:**UP/DOWN** 移动光标,**OK** 激活当前行,**长按 DOWN** 逐级返回,
+**长按 OK** 进配网,**UP 双击/长按** 开始或停止录音。聚合状态(融合凭据、链路、
+暂停、上行四层判断)只在 HOME 出现,子页不重复;Wi-Fi 与 Uplink 分列,因为
+"WiFi 通"并不等于"能上传"。
 
 ## 排查出来的工程结论
 
@@ -57,6 +77,25 @@
 5. **上行会往死 socket 里写**。`send()` 失败被静默吞掉,接收端一重启设备就再也
    不重连。现在发送失败会关连接并重连。
 6. **任务栈大小**。录音任务需要 32KB 静态栈,才能容纳 `bsp_audio_init()` 加编码循环。
+7. **日志绝不能拖垮连接**。接收端曾用 `python -m stackbear.server | tee log` 启动;
+   tee 的读端一旦消失,stdout 就没有读者,每次 `print()` 都抛 `BrokenPipeError` ——
+   它属于 `OSError`,被连接处理的 `except (OSError, ...)` 吞掉,于是连接刚建立就被
+   关闭,设备开始每两秒重连,界面显示 UPLOAD ERR。现在所有诊断都经过 best-effort 的
+   `log()`(忽略写失败),并提供 `run_server.sh` 直接写文件而非走管道。
+8. **重启后不再使用已保存的凭据**。`sb_net_ensure_connected()` 只看内存里的
+   `s_ssid`,而在重连重构后开机没有任何地方填充它,于是每次重启(含 OTA 后)都表现得
+   像"未配网"。修复方式是 `sb_net_load_saved()`,在 `sb_net_init()` 之后调用一次。
+   另外配网一度彻底失败:`apply_sta_config()` 在配网期间直接拒绝 —— 那道守卫本意只
+   约束后台自动重连。
+9. **离线队列项按协议上限分配**。每个上行队列槽按 1400 字节开,而 ADPCM 帧只有
+   484 字节,24 个槽白占 32.9KB 常驻内存。叠加上行 socket 后,OTA 下载期间堆被耗尽
+   (`wifi:alloc eb ... fail`,随后 load access fault)。现在每项只装一帧音频
+   (共 7.6KB),并用静态断言绑定到 ADPCM 块与缓存槽;OTA 下载缓冲改为 2KB 静态;
+   下载前停掉上行任务,把内存还给 WiFi。
+10. **一个永远匹配不上的 JSON 解析**。OTA 清单解析要求 key 后紧跟引号,而实际是
+    `"version": "..."`(中间有冒号),于是每次取值都失败,"Check for update" 在下载
+    之前就报 `check failed`。现在会跳过分隔符、拒绝被截断的值(截断的 sha256 会让
+    校验悄无声息地失效)并要求闭合引号;它独立成 `main/sb_json.[ch]` 并带回归测试。
 
 ## 新增工具
 
@@ -64,6 +103,17 @@
 | --- | --- |
 | `tools/usb_console.py` | 在 Termux/Android 上读取 ESP32 原生 USB-CDC 控制台。Android 没有串口设备节点,minicom/pyserial 都连不上;本工具用 pyusb 包装 `termux-usb` 的设备描述符,读取 bulk-IN 端点。 |
 | `tools/adpcm_to_wav.py` | 把落盘的会话(`audio.adpcm`,或旧的 `audio.opus`)解码成可播放的 WAV,并打印时长、峰值与 RMS,不听也能确认录音是否有效。 |
+| `tools/make_ota_manifest.py` | 生成 OTA 清单(`version`/`sha256`/`size`/`commit`/`branch`/`url`),版本串与固件里编译进去的完全一致,设备才能识别出"已是最新"。 |
+
+可主机测试的逻辑都刻意从 LVGL/ESP-IDF 代码里剥离,由 `tests/test_sb_*.c` 覆盖:
+分帧(`sb_proto`)、VAD(`sb_vad`)、编解码(`sb_adpcm`)、离线槽位(`sb_cache_slot`)、
+清单解析(`sb_json`)、页面层级(`sb_nav`)。
+
+## 界面设计说明(taste 规范)
+
+布局遵循"去装饰"原则而不是堆卡片:一个地面色、一个墨色、一个强调色;选中态用
+"亮一档的底色"表达,而不是描边或阴影;主要信息靠放大字号承担层级,而不是加装饰;
+说明文字写全,不用图标代替。状态行右侧直接给出取值,不进子页也能读。
 
 ## 转写 provider 层
 
@@ -122,32 +172,53 @@ worker 支持音频的池子里。
 ## 构建、烧录与测试流程
 
 - **构建**:只走 GitHub Actions(`.github/workflows/build-firmware.yml`),在
-  ESP-IDF 5.5.3 下运行 `./tools/validate.sh --firmware`,产出 `0x0` 用的
-  `build/FoloToy-AI-Passport-full.bin`。
+  ESP-IDF 5.5.3 下运行 `./tools/validate.sh --firmware`,产出两种包:
+  `build/FoloToy-AI-Passport-full.bin`(`0x0` 合并镜像)与
+  `build/FoloToy-AI-Passport-ota.bin` + `build/ota-latest.json`(OTA 包)。配置了
+  ECS secrets 时,工作流会把镜像和清单发布到接收端;没配则打印跳过,需要手动拷贝。
 - **烧录**:经 `termux-usb` 通道执行
   `nrflash write --chip esp32c3 --offset 0x0 --verify`;手机上需点"允许"授权。
-- **注意**:`0x0` 合并镜像会覆盖 NVS 分区,WiFi 凭据会丢失,所以每次刷机都要重新
-  配网。只刷应用分区(`0x10000`)可以保留凭据。
+- **分区布局**:两个 OTA 槽(`ota_0`/`ota_1`,各 2.94MB)、`fota`(otadata,按项目
+  约定改名)、约 2MB 的 `audioq` 环形区(离线队列)。备用 OTA 槽同时充当下载目标,
+  因此不需要额外的暂存分区。改成双槽时 `factory` 变更**必须线刷一次** —— 这也是
+  最后一次需要插线。
+- **数据影响**:`0x0` 合并镜像会覆盖 NVS 分区,凭据会丢失,**线刷后要重新配网**;
+  **OTA 不碰 NVS**,所以升级后凭据保留。
 - **刷后启动**:ESP32-C3 的 USB-Serial/JTAG 能挺过 CPU 复位,刷完看起来像没重启;
   可靠的做法是手动给板子断电重启。
 - **可观测性**:用 `tools/usb_console.py`;另外 `pkill -f stackbear.server` 会匹配到
   发起命令的 shell 本身,要用带方括号的写法。
 
+### OTA
+
+设备向接收端请求 `/firmware/latest.json`,比较版本后把镜像下载进备用槽(明文 HTTP),
+按清单里的 sha256 校验,设置启动分区并重启。镜像是**仅 app** 的镜像(不含 bootloader
+与分区表)。已启用回滚(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`),`app_main` 会确认
+正在运行的镜像,所以在确认之前崩溃的固件会被回滚到上一个槽。下载前 OTA 任务会结束
+当前录音会话并停掉上行任务,把内存还给 WiFi。
+
+没有用 HTTPS:接收端目前只有公网 IP 与 18080 端口,完整性依赖清单里的 sha256。
+`/firmware/` 只接受纯文件名,请求无法越出目录。
+
 ## 验证状态
 
 ```text
 Build:        PASS  (GitHub Actions,ESP-IDF 5.5.3 / esp32c3)
-Host tests:   PASS  (sb_proto、sb_vad、sb_adpcm、cloud 协议与服务端、仓库检查)
+Host tests:   PASS  (sb_proto、sb_vad、sb_adpcm、sb_cache_slot、sb_json、sb_nav、
+                     cloud 协议/adpcm/providers/server/autotranscribe/firmware、
+                     仓库检查)
 Device tests: 核心链路 PASS
               刷写与设备端 MD5、启动、显示、三键、SoftAP 配网、麦克风采集、
-              VAD 分段、ADPCM 编码、私有协议上传、ECS 按会话落盘
-Unverified:   解码后的语音质量、长时稳定性与续航、断网重连,
-              以及 ASR/LLM/飞书阶段
+              VAD 分段、ADPCM 编码、私有协议上传、ECS 按会话落盘、自动转写,
+              以及一次真实 OTA(检查 -> 下载 -> sha256 -> 切槽 -> 重启进新版本)
+Unverified:   解码后的语音质量、长时稳定性与续航、断网重连、
+              离线队列在真机上的写入,以及 LLM/飞书阶段
 ```
 
 ## 下一步
 
-1. 支持只刷应用分区,让配网凭据在升级后保留。
-2. 云端补上解码与会话列表,为 ASR 做准备。
-3. 设备端长时稳定性与功耗实测。
-4. 接入阿里云 ASR、LLM 抽取与飞书多维表格。
+1. 配置仓库 secrets `ECS_HOST` / `ECS_USER` / `ECS_PASSWORD`,让工作流自动发布
+   OTA 包。
+2. 设备端长时稳定性与功耗实测,以及断网状态下离线队列的写入/补传验证。
+3. 轮换开发期用过的 API key(它们出现在对话里;换完只需改环境变量)。
+4. 转写文本的 LLM 抽取,再接入飞书多维表格。

@@ -27,21 +27,43 @@ session for later transcription.
                                                                     |
                                                                     v
 [ECS 18080] asyncio receiver -> data/<device>/<session>/audio.adpcm + meta.json
+                                     |
+                                     +-> auto transcription (per VAD segment)
 ```
 
 - Firmware entry: `main/main.c`; UI in `main/sb_ui.c`; audio path in
   `main/sb_recorder.c`; codec in `main/sb_adpcm.c`; framing in `main/sb_proto.c`;
   VAD in `main/sb_vad.c`; Wi-Fi/provisioning in `main/sb_net.c` and
   `main/sb_net_web.c`; uplink in `main/sb_uplink.c`; NVS config in
-  `main/sb_config.c`.
+  `main/sb_config.c`; offline queue in `main/sb_cache.c`; OTA in `main/sb_ota.c`;
+  page hierarchy in `main/sb_nav.c`; build identity in `main/sb_version.c`.
 - Receiver project: `cloud/`, run with `uv` on the ECS as
-  `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`.
+  `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`
+  (or `./run_server.sh`, which logs straight to a file).
 - Audio format: IMA-ADPCM, 4 bit, 16 kHz mono, one self-contained 60 ms block per
   frame (`[2-byte big-endian length][4-byte header + nibbles]`), roughly 7.8 KB/s.
 - Segment boundaries travel with the audio: the first block of every VAD segment
   sets the `SEG_START` flag on its AUDIO frame, and the receiver records each
   segment's start offset and frame count in `meta.json`, so transcription can be
   submitted per utterance.
+
+### Screen hierarchy
+
+```text
+HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
+ └ STATUS       group menu; each row carries a summary on the right
+     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+     ├ RECORDER  Recording / Segments / Sent / Dropped
+     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     └ STORAGE   Cache / Size / Used / Pending / Dropped
+```
+
+Keys are uniform: **UP/DOWN** move the cursor, **OK** acts on the current row,
+**long-press DOWN** goes back one level, **long-press OK** enters provisioning,
+**double/long-press UP** starts or stops recording. The aggregate state (which
+fuses credential, link, pause and uplink) lives only on HOME so no sub-page
+repeats it; Wi-Fi and Uplink are separate rows because a healthy Wi-Fi link does
+not imply uploads work.
 
 ## Hand-won engineering findings
 
@@ -68,6 +90,36 @@ These were all found with the on-device console tool, in this order:
    close the socket and reconnect.
 6. **Task stack sizing.** The capture task needs a 32 KB static stack for
    `bsp_audio_init()` plus the encoder loop.
+7. **Logging must never break a connection.** The receiver had been started as
+   `python -m stackbear.server | tee log`. When the tee reader died, stdout had
+   no reader, so every `print()` raised `BrokenPipeError` - an `OSError` - which
+   the connection handler's `except (OSError, ...)` swallowed, closing the device
+   link right after it connected. The device then reconnected every couple of
+   seconds and the UI showed UPLOAD ERR. All diagnostics now go through a
+   best-effort `log()` that ignores write errors, and `run_server.sh` logs to a
+   file instead of a pipe.
+8. **A reboot stopped using the saved credentials.** `sb_net_ensure_connected()`
+   only looked at the in-memory `s_ssid`, and nothing populated it on boot after
+   the reconnect rework, so every restart (including an OTA reboot) behaved as
+   "not provisioned". Fixed by `sb_net_load_saved()`, called once after
+   `sb_net_init()`. Provisioning also failed outright for a while because
+   `apply_sta_config()` refused whenever provisioning was active - the guard was
+   meant for the background reconnect timer only.
+9. **Offline queue items were sized to the protocol maximum.** Each uplink queue
+   slot held 1400 bytes although an ADPCM frame is 484, so 24 slots cost 32.9 KB
+   of permanent RAM. Combined with the upload socket, that exhausted the heap
+   during an OTA download (`wifi:alloc eb ... fail`, then a load-access fault).
+   Items now hold one audio frame (7.6 KB total) with static assertions tying the
+   size to the ADPCM block and the cache slot, the OTA download buffer is a 2 KB
+   static buffer, and the uplink task is stopped before downloading so its
+   buffers return to the Wi-Fi stack.
+10. **A JSON helper that never matched.** The OTA manifest parse required a quote
+    immediately after the key, but the manifest has `"version": "..."` with a
+    colon between, so every lookup failed and "Check for update" always reported
+    `check failed` before downloading anything. Now the parser skips the
+    separator, refuses truncated values (a clipped sha256 would silently break
+    verification) and requires a closing quote; it lives in `main/sb_json.[ch]`
+    with a regression test.
 
 ## Tooling added
 
@@ -75,6 +127,21 @@ These were all found with the on-device console tool, in this order:
 | --- | --- |
 | `tools/usb_console.py` | Reads the ESP32 native USB-CDC console on Termux/Android, where there is no serial tty and minicom/pyserial cannot attach. Wraps the `termux-usb` descriptor with pyusb and streams the bulk-IN endpoint. |
 | `tools/adpcm_to_wav.py` | Decodes a stored session (`audio.adpcm`, or legacy `audio.opus`) into a playable WAV, and prints duration, peak and RMS so the recording can be checked without listening. |
+| `tools/make_ota_manifest.py` | Writes the OTA manifest (`version`, `sha256`, `size`, `commit`, `branch`, `url`) using the same version string the firmware builds, so a device recognises "already current". |
+
+Host-testable logic is deliberately split out of the LVGL/ESP-IDF code and
+covered by `tests/test_sb_*.c`: framing (`sb_proto`), VAD (`sb_vad`), codec
+(`sb_adpcm`), offline-slot codec (`sb_cache_slot`), manifest parsing
+(`sb_json`) and page hierarchy (`sb_nav`).
+
+## UI design notes (taste house style)
+
+The layout follows the "no ornament" rules rather than assembling cards: one
+ground colour, one ink, one accent; selection is shown by a one-step-lighter
+background instead of borders or shadows; the main figure is set larger rather
+than surrounded by decoration; explanatory copy is written out in full instead
+of being replaced by icons. Status rows carry their value on the right so the
+page reads without extra navigation.
 
 ## Transcription provider layer
 
@@ -145,35 +212,68 @@ audio.
 ## Build, flash and test workflow
 
 - **Build:** GitHub Actions only (`.github/workflows/build-firmware.yml`), which
-  runs `./tools/validate.sh --firmware` under ESP-IDF 5.5.3 and uploads
-  `build/FoloToy-AI-Passport-full.bin` for `0x0`.
+  runs `./tools/validate.sh --firmware` under ESP-IDF 5.5.3 and uploads two
+  packages: `build/FoloToy-AI-Passport-full.bin` (the merged `0x0` image) and
+  `build/FoloToy-AI-Passport-ota.bin` plus `build/ota-latest.json` (the OTA
+  package). With the ECS secrets configured, the workflow then publishes the
+  image and the manifest to the receiver; without them it prints a skip and the
+  files must be copied by hand.
 - **Flash:** `nrflash write --chip esp32c3 --offset 0x0 --verify` over the
   `termux-usb` path; the phone must approve the USB permission prompt.
-- **Important:** a merged `0x0` image overwrites the NVS partition, so Wi-Fi
-  credentials are lost and provisioning must be repeated after every flash.
-  Flashing only the application partition at `0x10000` preserves them.
+- **Partition layout:** two OTA slots (`ota_0`/`ota_1`, 2.94 MB each), `fota`
+  (otadata, renamed by project convention), a ~2 MB `audioq` ring for the offline
+  queue. The spare OTA slot doubles as the download target, so no separate
+  staging partition is needed. The application does not fit a single-slot layout
+  any more; changing `factory` to `ota_0/ota_1` required one line flash, which is
+  why it was the last time USB was needed.
+- **Flashing data:** a merged `0x0` image overwrites the NVS partition, so Wi-Fi
+  credentials are lost and provisioning must be repeated **after a line flash**.
+  An OTA update does **not** touch NVS, so credentials survive it.
 - **Boot after flash:** the ESP32-C3 USB-Serial/JTAG survives a CPU reset, so a
   flash may look like it did not restart. Power-cycling the board is the
   reliable way to run new firmware.
 - **Observability:** `tools/usb_console.py`; `pkill -f stackbear.server` also
   matches the invoking shell, so use a bracketed pattern.
 
+### OTA
+
+The device asks the receiver for `/firmware/latest.json`, compares versions,
+downloads the image into the spare slot over plain HTTP, verifies the sha256
+from the manifest, sets the boot partition and restarts. The image is an app
+image only (no bootloader or partition table). Rollback is enabled
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) and `app_main` confirms the running
+image, so a firmware that crashes before confirming is rolled back to the
+previous slot. Before downloading, the OTA task ends the current recording
+session and stops the uplink so its buffers return to the Wi-Fi stack.
+
+HTTPS is not used: the receiver currently has only a public IP and port 18080,
+so integrity rests on the sha256 from the manifest. `/firmware/` serves plain
+names only, so a request cannot escape the directory.
+
 ## Verification status
 
 ```text
 Build:        PASS  (GitHub Actions, ESP-IDF 5.5.3 / esp32c3)
-Host tests:   PASS  (sb_proto, sb_vad, sb_adpcm, cloud protocol + server, repo checks)
+Host tests:   PASS  (sb_proto, sb_vad, sb_adpcm, sb_cache_slot, sb_json, sb_nav,
+                     cloud protocol/adpcm/providers/server/autotranscribe/firmware,
+                     repo checks)
 Device tests: PASS for the core path
               flash + on-device MD5, boot, display, three buttons, SoftAP setup,
               microphone capture, VAD segmentation, ADPCM encode, private-protocol
-              upload, and per-session storage on the ECS
+              upload, per-session storage on the ECS, automatic transcription,
+              and one real OTA update (check -> download -> sha256 -> slot switch
+              -> reboot into the new version)
 Unverified:   decoded speech quality, long-run stability and battery life,
-              reconnect after a network drop, and the ASR/LLM/Feishu stage
+              reconnect after a network drop, the offline queue writing to flash
+              on real hardware, and the LLM/Feishu stage
 ```
 
 ## Next steps
 
-1. Support application-partition flashing so provisioning survives updates.
-2. Add a decode step and a session listing to the cloud side before ASR.
-3. Long-run stability and power measurements on the device.
-4. AliCloud ASR, LLM extraction, and Feishu Bitable delivery.
+1. Configure the `ECS_HOST` / `ECS_USER` / `ECS_PASSWORD` repository secrets so
+   the workflow publishes the OTA package automatically.
+2. Long-run stability and power measurements on the device, and an offline-queue
+   write/upload test with the network down.
+3. Rotate the API keys used during development (they appeared in chat; only the
+   environment variables change).
+4. LLM extraction from the transcript, then Feishu Bitable delivery.
