@@ -108,16 +108,19 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
 // cannot set config" 的状态竞态。
 static esp_err_t apply_sta_config(void)
 {
-    if (s_provisioning) {
-        return ESP_ERR_INVALID_STATE;   // 配网期间由网页那侧直接连接
-    }
+    // 这里【不】检查 s_provisioning:配网页验证新热点时正要走这条路径。
+    // 配网期间禁止的是"后台自动重连"(见 reconnect_timer_cb),不是这次显式连接。
     wifi_config_t wc = {0};
     strlcpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid));
     strlcpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password));
     wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (m != ESP_OK && m != ESP_ERR_WIFI_STATE) {
-        return m;
+    // 配网期间必须保持 APSTA:手机正连着 SoftAP 打开配置页,切回 STA-only 会
+    // 把 SoftAP 关掉,网页连接断开,POST /save 永远拿不到响应。
+    if (!s_provisioning) {
+        esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (m != ESP_OK && m != ESP_ERR_WIFI_STATE) {
+            return m;
+        }
     }
     (void)esp_wifi_disconnect();
     esp_err_t e = esp_wifi_set_config(WIFI_IF_STA, &wc);
