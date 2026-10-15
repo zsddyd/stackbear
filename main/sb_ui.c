@@ -22,7 +22,7 @@
 // 调色板:一个地面、一个墨色、一个强调色 —— 不做渐变/发光/阴影。
 #define C_BG      0x0E1216
 #define C_CARD    0x1B222B
-#define C_SEL     0x24303F   // 选中行的底色:比卡片亮一档,而不是加边框
+#define C_SEL     0x24303F   // 选中高亮的底色:比卡片亮一档,而不是加边框
 #define C_TEXT    0xEDF2F7
 #define C_MUTED   0x8A97A6
 #define C_OK      0x35C46A
@@ -31,9 +31,12 @@
 #define C_ACCENT  0x3B82F6
 
 #define MAX_ROWS   7
+#define ROW_X      12
 #define ROW_Y0     38
 #define ROW_PITCH  34
 #define ROW_H      30
+#define ROW_W      216
+#define SEL_MS     150   // 选中高亮滑动时长;按键连击时只重启这一个动画
 
 // ---------------------------------------------------------------------------
 // 通用控件
@@ -74,12 +77,23 @@ static lv_obj_t *base_screen(const char *title)
 }
 
 // ---------------------------------------------------------------------------
-// 列表页:一行 = 名称(左)+ 值(右)。光标用底色而不是描边来标出。
+// 列表页:一行 = 名称(左)+ 值(右)。
+//
+// 光标由一个独立的高亮矩形表示,它在行之间缓动。绘制顺序用三级层次实现,
+// 这样"选中行底色亮一档"的原始外观完全不变(见 house style:用底色而不是描边):
+//
+//   1. 每行的底色矩形(C_CARD,不透明)——先创建,在最底层
+//   2. 高亮矩形(C_SEL,不透明)——后创建,盖在选中那行的底色之上
+//   3. 名称/数值标签——最后创建且父对象是屏幕,因此画在高亮之上
+//
+// 标签不能放在行底色里当子对象:那样它们会先于第 2 层绘制而被高亮盖住。所以
+// 标签挂在屏幕上,再用 lv_obj_align_to() 对齐到对应的行底色。
 // ---------------------------------------------------------------------------
 
 typedef struct {
     lv_obj_t *scr;
-    lv_obj_t *cards[MAX_ROWS];
+    lv_obj_t *rows[MAX_ROWS];    // 行底色矩形(C_CARD)
+    lv_obj_t *sel;               // 选中高亮矩形(C_SEL)
     lv_obj_t *vals[MAX_ROWS];
     int count;
     int cursor;
@@ -87,18 +101,49 @@ typedef struct {
 
 static list_page_t s_menu, s_net, s_rec, s_dev, s_stor;
 
+// 一行的底色矩形。只负责画那一行的卡片轮廓,不承载子对象。
+static lv_obj_t *row_bg(lv_obj_t *parent, int y)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(o, ROW_X, y);
+    lv_obj_set_size(o, ROW_W, ROW_H);
+    lv_obj_set_style_radius(o, 10, 0);
+    lv_obj_set_style_border_width(o, 0, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
+    lv_obj_set_style_bg_color(o, lv_color_hex(C_CARD), 0);
+    return o;
+}
+
 static void page_init(list_page_t *p, const char *title, const char *const *names, int count)
 {
     p->count = count;
     p->cursor = 0;
     p->scr = base_screen(title);
+
+    // 第 1 层:所有行的卡片底色。
     for (int i = 0; i < count && i < MAX_ROWS; i++) {
-        lv_obj_t *c = card(p->scr, 12, ROW_Y0 + i * ROW_PITCH, 216, ROW_H, C_CARD);
-        lv_obj_t *n = label(c, names[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_align(n, LV_ALIGN_LEFT_MID, 10, 0);
-        p->vals[i] = label(c, "-", &lv_font_montserrat_14, C_TEXT);
-        lv_obj_align(p->vals[i], LV_ALIGN_RIGHT_MID, -10, 0);
-        p->cards[i] = c;
+        p->rows[i] = row_bg(p->scr, ROW_Y0 + i * ROW_PITCH);
+    }
+
+    // 第 2 层:选中高亮。它在行底色之后创建,所以盖在选中行的底色上;几何与
+    // 行底色完全一致(同样的 x/y/w/h 与圆角),视觉上等同于把那一行的底色换成
+    // C_SEL,但它是一个可以整体缓动的独立对象。
+    p->sel = lv_obj_create(p->scr);
+    lv_obj_remove_flag(p->sel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(p->sel, ROW_X, ROW_Y0);
+    lv_obj_set_size(p->sel, ROW_W, ROW_H);
+    lv_obj_set_style_radius(p->sel, 10, 0);
+    lv_obj_set_style_border_width(p->sel, 0, 0);
+    lv_obj_set_style_pad_all(p->sel, 0, 0);
+    lv_obj_set_style_bg_color(p->sel, lv_color_hex(C_SEL), 0);
+
+    // 第 3 层:标签。挂在屏幕上(而非行底色里)才能绘制在高亮之上。
+    for (int i = 0; i < count && i < MAX_ROWS; i++) {
+        lv_obj_t *n = label(p->scr, names[i], &lv_font_montserrat_14, C_MUTED);
+        lv_obj_align_to(n, p->rows[i], LV_ALIGN_LEFT_MID, 10, 0);
+        p->vals[i] = label(p->scr, "-", &lv_font_montserrat_14, C_TEXT);
+        lv_obj_align_to(p->vals[i], p->rows[i], LV_ALIGN_RIGHT_MID, -10, 0);
     }
 }
 
@@ -121,19 +166,37 @@ static void page_set_fmt(list_page_t *p, int row, uint32_t color, const char *fm
     page_set(p, row, buf, color);
 }
 
-static void page_draw_cursor(list_page_t *p)
+static void sel_set_y(void *obj, int32_t y)
 {
-    for (int i = 0; i < p->count; i++) {
-        if (p->cards[i] == NULL) {
-            continue;
-        }
-        lv_obj_set_style_bg_color(p->cards[i],
-                                  lv_color_hex(i == p->cursor ? C_SEL : C_CARD), 0);
+    lv_obj_set_y((lv_obj_t *)obj, y);
+}
+
+// 把选中高亮缓动到当前光标行。先删掉在跑的动画再从当前 y 重新滑:连按按键时
+// 不会堆积动画节点,也不会从起始行回跳(起点取的是动画此刻的位置)。
+static void page_slide_sel(list_page_t *p)
+{
+    if (p->sel == NULL) {
+        return;
     }
+    const int32_t target = ROW_Y0 + p->cursor * ROW_PITCH;
+    const int32_t from = lv_obj_get_y(p->sel);
+    if (from == target) {
+        return;
+    }
+    lv_anim_delete(p->sel, sel_set_y);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, p->sel);
+    lv_anim_set_exec_cb(&a, sel_set_y);
+    lv_anim_set_values(&a, from, target);
+    lv_anim_set_duration(&a, SEL_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
 }
 
 static void page_move(list_page_t *p, int delta)
 {
+    const int before = p->cursor;
     p->cursor += delta;
     if (p->cursor < 0) {
         p->cursor = 0;
@@ -141,7 +204,10 @@ static void page_move(list_page_t *p, int delta)
     if (p->cursor >= p->count) {
         p->cursor = p->count - 1;
     }
-    page_draw_cursor(p);
+    // 光标没动(已到边界)就不要白白重启动画。
+    if (p->cursor != before) {
+        page_slide_sel(p);
+    }
 }
 
 // ---------------------------------------------------------------------------
