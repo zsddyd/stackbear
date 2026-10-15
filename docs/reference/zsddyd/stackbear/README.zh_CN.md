@@ -112,6 +112,13 @@ OpenRouter 上同一模型的路由——后者返回空文本);`gemini-4-argon-
 切分并逐段转写;`--dry-run` 只检查配置不调用 API,`--write` 把 `transcript.txt` /
 `transcript.json` 写回会话目录。
 
+接收端也会**自己转写**:会话结束(收到 END 帧、重连或超时)后在工作线程里解码并转写,
+不阻塞接收循环,然后把 `transcript.txt`、`transcript.json`、`transcript.status.json`
+写进会话目录。`STACKBEAR_ASR_AUTO=0` 可关闭;`STACKBEAR_ASR_PER_SEGMENT`(默认开)选择
+按句还是整段转写。短于 400ms 的片段会被跳过而不是提交;某一个片段失败不再连累整个会话;
+`STACKBEAR_ASR_RETRIES`(默认 3)会重试请求,因为有些网关把同一个模型路由到只有部分
+worker 支持音频的池子里。
+
 ## 构建、烧录与测试流程
 
 - **构建**:只走 GitHub Actions(`.github/workflows/build-firmware.yml`),在

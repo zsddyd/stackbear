@@ -69,6 +69,9 @@ async def _client(host: str, port: int) -> None:
 async def _run() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         server.DATA = pathlib.Path(tmp) / "data"
+        # This test covers receive/storage/segmentation, not ASR: do not spawn a
+        # real transcription for the synthetic frames.
+        server.AUTO_TRANSCRIBE = False
         srv = await asyncio.start_server(server._handler, host="127.0.0.1", port=0)
         port = srv.sockets[0].getsockname()[1]
         async with srv:

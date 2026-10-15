@@ -131,6 +131,17 @@ splits it on the recorded VAD boundaries and transcribes each utterance;
 `--dry-run` checks the setup without calling the API, and `--write` stores
 `transcript.txt` / `transcript.json` beside the session.
 
+The receiver can also transcribe by itself: when a session ends (an `END` frame,
+a reconnect or a timeout), it decodes and transcribes in a worker thread so the
+receive loop never stalls, then writes `transcript.txt`, `transcript.json` and
+`transcript.status.json` into the session directory. `STACKBEAR_ASR_AUTO=0`
+turns it off; `STACKBEAR_ASR_PER_SEGMENT` (default on) chooses per-utterance or
+whole-session transcription. Segments shorter than 400 ms are skipped rather
+than submitted, a single failed segment no longer discards the rest of the
+session, and `STACKBEAR_ASR_RETRIES` (default 3) retries a request because some
+gateways route one model across a pool where only part of the workers accept
+audio.
+
 ## Build, flash and test workflow
 
 - **Build:** GitHub Actions only (`.github/workflows/build-firmware.yml`), which

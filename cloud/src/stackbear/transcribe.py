@@ -25,6 +25,12 @@ import wave
 
 from . import adpcm, providers
 
+# Segments shorter than this are not worth a separate provider call: models tend
+# to answer a 60 ms clip with tool calls or nothing at all, and one bad segment
+# used to abort the whole session. Shorter spans are skipped; if nothing is left,
+# the session is transcribed as a whole.
+MIN_SEGMENT_MS = 400
+
 
 @contextlib.contextmanager
 def publish(wav: bytes, public_url: str):
@@ -57,6 +63,96 @@ def wav_bytes(samples: list[int]) -> bytes:
         wav.setframerate(adpcm.SAMPLE_RATE)
         wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
     return buffer.getvalue()
+
+
+def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | None = None,
+                       per_segment: bool = False, language: str | None = None,
+                       transport=None, provider=None) -> dict:
+    """Transcribe a stored session and return the result payload.
+
+    Shared by the CLI and the receiver's end-of-session hook so both paths use
+    the same decoding, segmentation and provider code. Raises
+    providers.ProviderError on a provider failure and FileNotFoundError when the
+    session has no audio.
+    """
+    src = adpcm.find_audio(session)
+    samples, _ = adpcm.decode_stream(src.read_bytes())
+    if not samples:
+        raise FileNotFoundError(f"nothing decodable in {src}")
+    cfg = config or providers.AsrConfig.from_env()
+    # `provider` is injectable so the receiver and tests can supply an
+    # alternative engine without going through the environment.
+    provider = provider or providers.get_provider(cfg, transport=transport)
+
+    meta = {}
+    meta_path = session / "meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+
+    def run(span: list[int]) -> providers.Transcript:
+        blob = wav_bytes(span)
+        if cfg.audio_mode == "url":
+            with publish(blob, cfg.public_url) as url:
+                return provider.transcribe(blob, language=language, audio_url=url)
+        return provider.transcribe(blob, language=language)
+
+    results: list[dict] = []
+    errors: list[dict] = []
+    spans = []
+    if per_segment:
+        min_samples = MIN_SEGMENT_MS * adpcm.SAMPLE_RATE // 1000
+        spans = [(s, e) for (s, e) in segment_slices(meta, len(samples))
+                 if e - s >= min_samples]
+    if spans:
+        for index, (start, end) in enumerate(spans):
+            try:
+                transcript = run(samples[start:end])
+            except providers.ProviderError as exc:
+                # One unusable utterance must not lose the rest of the session.
+                errors.append({"index": index, "start_ms": start * 1000 // adpcm.SAMPLE_RATE,
+                               "error": str(exc)})
+                continue
+            results.append({"index": index,
+                            "start_ms": start * 1000 // adpcm.SAMPLE_RATE,
+                            "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
+                            "text": transcript.text,
+                            "vendor": transcript.vendor, "model": transcript.model,
+                            "usage": usage_of(transcript)})
+        if not results:
+            # Every segment failed: retry the session as one piece before giving up.
+            errors.clear()
+            spans = []
+    if not spans:
+        transcript = run(samples)
+        results.append({"index": 0, "start_ms": 0,
+                        "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
+                        "text": transcript.text,
+                        "vendor": transcript.vendor, "model": transcript.model,
+                        "usage": usage_of(transcript)})
+    # Record the model the provider actually reported, not just the requested
+    # one: a gateway may route to a different variant.
+    used_model = next((r["model"] for r in results if r.get("model")), cfg.model)
+    used_vendor = next((r["vendor"] for r in results if r.get("vendor")), cfg.vendor)
+    return {"provider": cfg.provider, "vendor": used_vendor, "model": used_model,
+            "results": results, "errors": errors}
+
+
+def usage_of(transcript: providers.Transcript) -> dict:
+    """Token accounting as reported by the gateway, for cost tracking."""
+    usage = (transcript.raw or {}).get("usage") or {}
+    return {k: usage.get(k) for k in
+            ("prompt_tokens", "completion_tokens", "total_tokens",
+             "cost", "cost_details") if k in usage}
+
+
+def write_result(session: pathlib.Path, payload: dict) -> None:
+    (session / "transcript.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (session / "transcript.txt").write_text(
+        "\n".join(r["text"] for r in payload["results"]) + "\n", encoding="utf-8")
 
 
 def segment_slices(meta: dict, total: int) -> list[tuple[int, int]]:
@@ -97,15 +193,14 @@ def main() -> int:
     print(f"{src}: {info['seconds']:.2f}s, peak {info['peak']}, rms {info['rms']}, bad {bad}",
           file=sys.stderr)
 
-    meta = {}
-    meta_path = session / "meta.json"
-    if meta_path.is_file():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            meta = {}
-
     if args.dry_run:
+        meta = {}
+        meta_path = session / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                meta = {}
         spans = segment_slices(meta, len(samples))
         print(f"dry run: provider config -> {providers.AsrConfig.from_env().describe()}", file=sys.stderr)
         print(f"dry run: {len(spans)} segment(s) recorded" if spans else "dry run: no segment metadata",
@@ -118,68 +213,25 @@ def main() -> int:
         config.vendor = args.provider
     if args.model:
         config.model = args.model
-    provider = providers.get_provider(config)
     print(f"using {config.describe()}", file=sys.stderr)
 
     if config.audio_mode == "url" and not config.public_url:
         print("audio_mode=url requires STACKBEAR_ASR_PUBLIC_URL", file=sys.stderr)
         return 2
-
-    def run(span_samples: list[int]) -> providers.Transcript:
-        """Transcribe one span, publishing it over HTTP first when the provider
-        is configured to hand the model a URL instead of inline audio."""
-        blob = wav_bytes(span_samples)
-        if config.audio_mode == "url":
-            with publish(blob, config.public_url) as url:
-                print(f"published {len(blob)} bytes at {url}", file=sys.stderr)
-                return provider.transcribe(blob, language=args.language, audio_url=url)
-        return provider.transcribe(blob, language=args.language)
-
-    def usage_of(transcript: providers.Transcript) -> dict:
-        """Token accounting as reported by the gateway, for cost tracking."""
-        usage = (transcript.raw or {}).get("usage") or {}
-        return {k: usage.get(k) for k in
-                ("prompt_tokens", "completion_tokens", "total_tokens",
-                 "cost", "cost_details") if k in usage}
-
-    results: list[dict] = []
     try:
-        spans = segment_slices(meta, len(samples)) if args.per_segment else []
-        if spans:
-            for index, (start, end) in enumerate(spans):
-                transcript = run(samples[start:end])
-                start_ms = start * 1000 // adpcm.SAMPLE_RATE
-                results.append({"index": index, "start_ms": start_ms,
-                                "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
-                                "text": transcript.text,
-                                "vendor": transcript.vendor, "model": transcript.model,
-                                "usage": usage_of(transcript)})
-                if args.usage:
-                    print(f"usage: {usage_of(transcript)}", file=sys.stderr)
-                print(f"[{start_ms:>7} ms] {transcript.text}")
-        else:
-            if args.per_segment:
-                print("no segment metadata; transcribing the whole session", file=sys.stderr)
-            transcript = run(samples)
-            results.append({"index": 0, "start_ms": 0,
-                            "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
-                            "text": transcript.text,
-                            "vendor": transcript.vendor, "model": transcript.model,
-                            "usage": usage_of(transcript)})
-            if args.usage:
-                print(f"usage: {usage_of(transcript)}", file=sys.stderr)
-            print(transcript.text)
+        payload = transcribe_session(session, config=config, per_segment=args.per_segment,
+                                     language=args.language)
     except providers.ProviderError as exc:
         print(f"transcription failed: {exc}", file=sys.stderr)
         return 2
 
+    for row in payload["results"]:
+        if args.usage and row.get("usage"):
+            print(f"usage: {row['usage']}", file=sys.stderr)
+        print(f"[{row['start_ms']:>7} ms] {row['text']}" if len(payload["results"]) > 1
+              else row["text"])
     if args.write:
-        payload = {"provider": config.provider, "vendor": config.vendor,
-                   "model": config.model, "results": results}
-        (session / "transcript.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        (session / "transcript.txt").write_text(
-            "\n".join(r["text"] for r in results) + "\n", encoding="utf-8")
+        write_result(session, payload)
         print(f"wrote {session}/transcript.json and transcript.txt", file=sys.stderr)
     return 0
 

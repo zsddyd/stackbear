@@ -39,6 +39,12 @@ SHARE_DIR = DATA / ".share"
 SHARE_TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
 QUOTA_BYTES = int(os.environ.get("STACKBEAR_QUOTA_BYTES", 4 * 1024 * 1024 * 1024))
 IDLE_TIMEOUT_S = float(os.environ.get("STACKBEAR_IDLE_TIMEOUT", 120.0))
+# Transcribe automatically when a session ends. On by default; set
+# STACKBEAR_ASR_AUTO=0 to receive audio only.
+AUTO_TRANSCRIBE = os.environ.get("STACKBEAR_ASR_AUTO", "1") not in ("0", "false", "no", "")
+# Transcripts are produced per recorded VAD segment when the firmware supplied
+# boundaries, which yields one line per utterance with its start offset.
+AUTO_PER_SEGMENT = os.environ.get("STACKBEAR_ASR_PER_SEGMENT", "1") not in ("0", "false", "no", "")
 
 _SAFE = re.compile(r"[^0-9A-Za-z_.-]")
 
@@ -255,6 +261,7 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                             prev = session.finish()
                             print(f"[resync] dev={session.dev} 上一会话未正常 END,已收尾 {prev}",
                                   flush=True)
+                            _schedule_transcribe(prev)
                         session = Session(dev)
                         session.set_hello(hello)
                         print(f"[hello] peer={peer} dev={dev} {hello}", flush=True)
@@ -269,6 +276,7 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
                             print(f"[end] dev={session.dev} dir={d} "
                                   f"frames={session.meta['frames']} "
                                   f"audio_ms={session.meta['audio_ms']}", flush=True)
+                            _schedule_transcribe(d)
                             session = None
                         writer.write(protocol.encode(protocol.TYPE_ACK, frame.seq))
                     elif frame.type == protocol.TYPE_PING:
@@ -296,6 +304,7 @@ async def _handle_device(initial: bytes, reader: asyncio.StreamReader, writer: a
             d = session.finish()
             print(f"[finalize] dev={session.dev} dir={d} frames={session.meta['frames']} "
                   f"(连接未正常 END)", flush=True)
+            _schedule_transcribe(d)
         writer.close()
         try:
             await writer.wait_closed()
@@ -309,6 +318,54 @@ def _parse_hello(payload: bytes) -> dict:
         return data if isinstance(data, dict) else {}
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return {}
+
+
+def _transcribe_worker(session_dir: pathlib.Path) -> None:
+    """Decode and transcribe a finished session, then write the result.
+
+    Runs in a worker thread: a provider call is slow (seconds), and the receive
+    loop must not stall for it. Failures are logged and recorded in a status file
+    so a missing transcript can be told apart from "not attempted".
+    """
+    from . import transcribe as transcribe_mod
+
+    status = session_dir / "transcript.status.json"
+
+    def note(payload: dict) -> None:
+        try:
+            status.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+        except OSError:
+            # The directory may be gone (rotated/cleaned); the transcript attempt
+            # still matters for logs, so never let bookkeeping mask the result.
+            pass
+
+    try:
+        payload = transcribe_mod.transcribe_session(
+            session_dir, per_segment=AUTO_PER_SEGMENT)
+        transcribe_mod.write_result(session_dir, payload)
+        lines = payload["results"]
+        note({"ok": True, "provider": payload["provider"], "model": payload["model"],
+              "segments": len(lines), "chars": sum(len(r["text"]) for r in lines),
+              "dropped": len(payload.get("errors", [])),
+              "usage": [r.get("usage") for r in lines]})
+        print(f"[asr] {session_dir} ok model={payload['model']} segments={len(lines)}",
+              flush=True)
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal to the service
+        note({"ok": False, "error": str(exc)})
+        print(f"[asr] {session_dir} failed: {exc}", flush=True)
+
+
+def _schedule_transcribe(session_dir: pathlib.Path) -> None:
+    """Queue a session for transcription without blocking the receive loop."""
+    if not AUTO_TRANSCRIBE:
+        return
+    try:
+        import asyncio
+
+        asyncio.get_running_loop().run_in_executor(None, _transcribe_worker, session_dir)
+    except RuntimeError:
+        _transcribe_worker(session_dir)
 
 
 async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

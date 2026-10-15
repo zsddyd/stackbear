@@ -24,6 +24,9 @@ repository, logs or session metadata:
     STACKBEAR_ASR_USER_AGENT client identity sent to the endpoint (default
                              stackbear/0.1); OpenCode Go requires a real client
                              name because Cloudflare rejects generic SDK agents
+    STACKBEAR_ASR_RETRIES    attempts per request (default: 3). Needed because
+                             some gateways route a model to a pool where only
+                             part of the workers accept audio
 
 Adding a vendor means adding one class below and registering it in PROVIDERS;
 nothing else in the receiver changes.
@@ -40,6 +43,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -84,6 +88,7 @@ class AsrConfig:
     audio_part: str = "input_audio_url"
     user_agent: str = "stackbear/0.1"
     session: str = ""
+    retries: int = 3
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -103,6 +108,7 @@ class AsrConfig:
             user_agent=source.get("STACKBEAR_ASR_USER_AGENT", "stackbear/0.1"),
             # OpenCode asks clients to send a stable per-conversation session id.
             session=source.get("STACKBEAR_ASR_SESSION", "stackbear-transcribe"),
+            retries=int(source.get("STACKBEAR_ASR_RETRIES", "3")),
         )
         # Explicit STACKBEAR_ASR_* values win; the rest come from the preset.
         cfg.vendor = source.get("STACKBEAR_ASR_VENDOR", "")
@@ -248,8 +254,21 @@ class OpenAiCompatibleProvider(Provider):
         }
         url = cfg.base_url.rstrip("/") + "/chat/completions"
         data = json.dumps(payload).encode("utf-8")
-        reply = self._transport(url, data, headers, cfg.timeout)
-        return self._parse(reply)
+
+        # Retry: an OpenAI-compatible gateway may front a pool where only some
+        # workers handle audio (observed on OpenCode Go, which alternates between
+        # "does not read audio", empty tool-call replies and correct transcripts
+        # for the same request). A retry usually lands on a capable worker.
+        last: Exception | None = None
+        for attempt in range(1, max(1, cfg.retries) + 1):
+            try:
+                return self._parse(self._transport(url, data, headers, cfg.timeout))
+            except ProviderError as exc:
+                last = exc
+                if attempt < max(1, cfg.retries):
+                    time.sleep(min(2.0 * attempt, 5.0))
+        assert last is not None
+        raise last
 
     def _parse(self, reply: dict) -> Transcript:
         if "error" in reply:

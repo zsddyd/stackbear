@@ -119,19 +119,19 @@ def test_provider_error_and_bad_shape() -> None:
     def failing(url, data, headers, timeout):
         return {"error": {"message": "rate limited", "code": 429}}
 
+    # Retries would otherwise sleep between attempts.
+    real_sleep, providers.time.sleep = providers.time.sleep, lambda _s: None
     try:
-        providers.get_provider(_config(), transport=failing).transcribe(b"x")
-    except providers.ProviderError as exc:
-        check("rate limited" in str(exc), f"provider error surfaced: {exc}")
-    else:
-        check(False, "error payload must raise")
-
-    try:
-        providers.get_provider(_config(), transport=lambda *a: {"unexpected": 1}).transcribe(b"x")
-    except providers.ProviderError as exc:
-        check("unexpected response shape" in str(exc), f"shape error: {exc}")
-    else:
-        check(False, "bad shape must raise")
+        for transport, needle in ((failing, "rate limited"),
+                                  (lambda *a: {"unexpected": 1}, "unexpected response shape")):
+            try:
+                providers.get_provider(_config(), transport=transport).transcribe(b"x")
+            except providers.ProviderError as exc:
+                check(needle in str(exc), f"expected {needle!r}, got {exc}")
+            else:
+                check(False, f"expected a ProviderError mentioning {needle!r}")
+    finally:
+        providers.time.sleep = real_sleep
 
 
 def test_unknown_provider() -> None:
@@ -174,6 +174,45 @@ def test_reasoning_field_fallbacks() -> None:
         check(got == expected, f"{message} -> {got!r}, want {expected!r}")
 
 
+def test_retries_until_a_capable_worker() -> None:
+    """A gateway can front a pool that only partly accepts audio; the provider
+    must retry rather than lose the segment."""
+    calls = {"n": 0}
+
+    def flaky(url, data, headers, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise providers.ProviderError("this model does not read audio or files")
+        return {"choices": [{"message": {"content": "ok-on-attempt-3"}}]}
+
+    cfg = _config(STACKBEAR_ASR_RETRIES="3")
+    # Do not actually sleep between attempts in tests.
+    real_sleep, providers.time.sleep = providers.time.sleep, lambda _s: None
+    try:
+        got = providers.get_provider(cfg, transport=flaky).transcribe(b"x")
+    finally:
+        providers.time.sleep = real_sleep
+    check(got.text == "ok-on-attempt-3", f"third attempt used, got {got.text!r}")
+    check(calls["n"] == 3, f"expected 3 attempts, got {calls['n']}")
+
+
+def test_retries_are_bounded() -> None:
+    def always_fail(url, data, headers, timeout):
+        raise providers.ProviderError("does not read audio")
+
+    cfg = _config(STACKBEAR_ASR_RETRIES="2")
+    real_sleep, providers.time.sleep = providers.time.sleep, lambda _s: None
+    try:
+        try:
+            providers.get_provider(cfg, transport=always_fail).transcribe(b"x")
+        except providers.ProviderError as exc:
+            check("does not read audio" in str(exc), f"final error surfaced: {exc}")
+        else:
+            check(False, "persistent failure must raise")
+    finally:
+        providers.time.sleep = real_sleep
+
+
 def main() -> int:
     test_config_from_env()
     test_request_shape()
@@ -184,6 +223,8 @@ def main() -> int:
     test_segment_slices_use_meta()
     test_wav_bytes_header()
     test_reasoning_field_fallbacks()
+    test_retries_until_a_capable_worker()
+    test_retries_are_bounded()
     if FAILURES:
         print(f"test_providers: {FAILURES} failure(s)")
         return 1
