@@ -97,6 +97,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_protocol.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_adpcm.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_merge_spans.py
+    PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_local_provider.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_providers.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_autotranscribe.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_server.py

@@ -157,13 +157,48 @@ STACKBEAR_ASR_BASE_URL  default: https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
 
-Two providers are registered. Presets supply endpoint, vendor and a default
+Three providers are registered. Presets supply endpoint, vendor and a default
 audio-capable model, so switching is one variable:
 
 | Provider | Endpoint | Key variable | Default model |
 | --- | --- | --- | --- |
 | `openrouter` | `https://openrouter.ai/api/v1` | `STACKBEAR_ASR_API_KEY` | `qwen/qwen3.8-omni-flash` |
-| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-flash` |
+| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-pro` |
+| `local` | none (in-process) | none | `sense-voice-small-int8` |
+
+### Local recognition (the free option that works)
+
+Every **free** audio model on OpenRouter turned out unusable: two
+(`thinkingmachines/inkling*:free`) answer HTTP 403 "only available on agentic
+harnesses", and `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` returns
+"(No spoken words detected)" for our 16 kHz mono WAV in every block tried. The
+paid models that work cost per hour, so the `local` provider removes both the
+cost and the network and keeps the audio on the machine.
+
+It is sherpa-onnx with SenseVoice-Small int8, installed with `uv pip install
+sherpa-onnx` (a wheel, no compilation) with the model fetched from
+`hf-mirror.com` (`huggingface.co` times out from the mainland host; the mirror
+resolves). Set:
+
+```text
+STACKBEAR_ASR_PROVIDER=local
+STACKBEAR_ASR_MODEL_DIR=<repo>/models/sense-voice   # model.int8.onnx + tokens.txt
+STACKBEAR_ASR_THREADS=2
+STACKBEAR_ASR_LANGUAGE=zh
+```
+
+Measured on the ECS (2 vCPU Xeon with AVX-512, 1.6 GB RAM): the model loads in
+1.6 s, runs at roughly 8x real time on two threads, and an 85 s recording
+transcribes in about 9 s at ~250-400 MB RSS. Two findings from measuring it:
+
+- **Chunk length matters more than the model.** A speech recogniser is trained
+  on short clips: the same 85 s recording gave 158 characters as eleven ~8 s
+  blocks and a single character as one 85 s block, with 15 s and 25 s blocks in
+  between (134 and 79 characters). `STACKBEAR_ASR_CHUNK_MS` therefore defaults
+  to 8 s for the local provider.
+- **Pin the language.** With auto-detection the two quiet opening blocks came
+  back as English ("B.", "After.") inside an otherwise Chinese conversation;
+  `STACKBEAR_ASR_LANGUAGE=zh` removes that.
 
 The OpenCode Go subscription reaches audio-capable models per the models.dev
 registry: `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`,

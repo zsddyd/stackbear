@@ -128,13 +128,42 @@ STACKBEAR_ASR_BASE_URL  默认 https://openrouter.ai/api/v1
 STACKBEAR_ASR_API_KEY   bearer token
 ```
 
-目前注册了两个 provider,预设会补齐地址、厂商标签与一个默认的音频模型,所以切换只需
+目前注册了三个 provider,预设会补齐地址、厂商标签与一个默认的音频模型,所以切换只需
 一个变量:
 
 | provider | 地址 | 密钥变量 | 默认模型 |
 | --- | --- | --- | --- |
 | `openrouter` | `https://openrouter.ai/api/v1` | `STACKBEAR_ASR_API_KEY` | `qwen/qwen3.8-omni-flash` |
-| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-flash` |
+| `opencode-go` | `https://opencode.ai/inference/go/v1` | `OPENCODE_API_KEY` | `mimo-v2.6-pro` |
+| `local` | 无(进程内) | 无 | `sense-voice-small-int8` |
+
+### 本地识别(真正可用的免费方案)
+
+OpenRouter 上**所有免费音频模型实测都不可用**:两个
+(`thinkingmachines/inkling*:free`)返回 HTTP 403"仅限 agentic harness";
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 对我们 16kHz 单声道 WAV 的每一个
+音频块都回"(No spoken words detected)"。能用的付费模型按小时计费,因此 `local`
+provider 同时去掉了成本与网络依赖,音频也不出机器。
+
+实现是 sherpa-onnx + SenseVoice-Small int8:`uv pip install sherpa-onnx` 装 wheel
+(无需编译),模型从 `hf-mirror.com` 拉取(国内主机直连 `huggingface.co` 超时,镜像可用)。
+配置:
+
+```text
+STACKBEAR_ASR_PROVIDER=local
+STACKBEAR_ASR_MODEL_DIR=<repo>/models/sense-voice   # model.int8.onnx + tokens.txt
+STACKBEAR_ASR_THREADS=2
+STACKBEAR_ASR_LANGUAGE=zh
+```
+
+在 ECS 上实测(2 vCPU Xeon,支持 AVX-512,1.6GB 内存):模型加载 1.6 秒,双线程约
+8 倍实时,85 秒录音约 9 秒转完,常驻内存约 250~400MB。测量中得到两个结论:
+
+- **分块长度比模型本身更关键**。语音识别器是在短片段上训练的:同一段 85 秒音频切成
+  11 个约 8 秒的块得到 158 字,而整段一次提交只出 1 个字;15 秒和 25 秒介于中间
+  (134 字和 79 字)。因此本地 provider 的 `STACKBEAR_ASR_CHUNK_MS` 默认 **8 秒**。
+- **要指定语言**。开启自动检测时,开头两个安静块在一段中文对话里被识别成英文
+  ("B."、"After.");`STACKBEAR_ASR_LANGUAGE=zh` 消除了这个问题。
 
 OpenCode Go 订阅按 models.dev 注册表确实包含支持音频输入的模型:`mimo-v2.6-flash`、
 `mimo-v2.6-pro`、`mimo-v2.5`、`gemini-4-argon-contributor`、

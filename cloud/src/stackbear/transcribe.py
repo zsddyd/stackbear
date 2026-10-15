@@ -126,7 +126,12 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
         # replaces an earlier rule that *dropped* segments shorter than 400 ms,
         # which silently discarded speech and left the tail of every session as
         # the fragment the model handles worst.
-        spans = merge_spans(segment_slices(meta, len(samples)))
+        #
+        # 块长度用 provider 的 chunk_ms:本地识别器对长输入退化明显(实测同一段
+        # 85 秒音频,8 秒块出 158 字,整段只出"不。"),所以它要 8 秒;云端模型可以
+        # 吃更长的上下文。上限始终不超过 MERGE_MAX_MS。
+        target = min(cfg.chunk_ms, MERGE_MAX_MS) if cfg.chunk_ms > 0 else MERGE_TARGET_MS
+        spans = merge_spans(segment_slices(meta, len(samples)), target_ms=target)
     if spans:
         for index, (start, end) in enumerate(spans):
             try:

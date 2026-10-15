@@ -27,6 +27,13 @@ repository, logs or session metadata:
     STACKBEAR_ASR_RETRIES    attempts per request (default: 3). Needed because
                              some gateways route a model to a pool where only
                              part of the workers accept audio
+    STACKBEAR_ASR_MODEL_DIR  local model directory, for the 'local' provider
+    STACKBEAR_ASR_THREADS    CPU threads for the local provider (default: 2)
+    STACKBEAR_ASR_CHUNK_MS   audio block length submitted per call (default:
+                             8000). Speech models are trained on short clips and
+                             degrade badly on long input - measured on an 85 s
+                             recording, 8 s blocks returned 158 characters while
+                             a single 85 s block returned only "不。"
 
 Adding a vendor means adding one class below and registering it in PROVIDERS;
 nothing else in the receiver changes.
@@ -93,6 +100,18 @@ class AsrConfig:
     user_agent: str = "stackbear/0.1"
     session: str = ""
     retries: int = 3
+    # Local provider settings. chunk_ms is deliberately shorter than the
+    # merge target used for cloud models: a local recognizer is fed exactly what
+    # we hand it (no gateway re-chunking), and measured quality fell off sharply
+    # beyond ~8 s.
+    model_dir: str = ""
+    threads: int = 2
+    chunk_ms: int = 8000
+    # SenseVoice auto-detects the language, but on very short or noisy blocks it
+    # then guesses wrong and returns English words for Chinese speech (observed:
+    # "B." and "After." for two blocks of a Chinese conversation). Pinning the
+    # language removes that class of error; empty means auto-detect.
+    language: str = "zh"
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -113,6 +132,10 @@ class AsrConfig:
             # OpenCode asks clients to send a stable per-conversation session id.
             session=source.get("STACKBEAR_ASR_SESSION", "stackbear-transcribe"),
             retries=int(source.get("STACKBEAR_ASR_RETRIES", "3")),
+            model_dir=source.get("STACKBEAR_ASR_MODEL_DIR", ""),
+            threads=int(source.get("STACKBEAR_ASR_THREADS", "2")),
+            chunk_ms=int(source.get("STACKBEAR_ASR_CHUNK_MS", "8000")),
+            language=source.get("STACKBEAR_ASR_LANGUAGE", "zh"),
         )
         # Explicit STACKBEAR_ASR_* values win; the rest come from the preset.
         cfg.vendor = source.get("STACKBEAR_ASR_VENDOR", "")
@@ -131,6 +154,12 @@ class AsrConfig:
         self.model = self.model or env.get("STACKBEAR_ASR_MODEL") or model
         self.base_url = self.base_url or env.get("STACKBEAR_ASR_BASE_URL") or base_url
         self.api_key = self.api_key or env.get("STACKBEAR_ASR_API_KEY") or env.get(key_env, "")
+        if self.provider == "local":
+            # The local recogniser degrades on long input (8 s blocks gave 158
+            # characters on the 85 s test clip, one 85 s block gave a single
+            # word), so its chunk stays short. It also needs no key.
+            self.vendor = self.vendor or "local"
+            self.model = self.model or "sense-voice-small-int8"
 
     def describe(self) -> str:
         """Human-readable identity for logs. Never includes the key."""
@@ -312,6 +341,12 @@ PROVIDERS: dict[str, type[Provider]] = {
 
 def get_provider(config: AsrConfig | None = None, transport: Callable | None = None) -> Provider:
     cfg = config or AsrConfig.from_env()
+    if cfg.provider == "local":
+        # Imported lazily: sherpa-onnx is an optional dependency, and the cloud
+        # providers must stay usable on a host where it is not installed.
+        from .providers_local import SenseVoiceProvider
+
+        return SenseVoiceProvider(cfg, transport=transport)
     try:
         factory = PROVIDERS[cfg.provider]
     except KeyError:
