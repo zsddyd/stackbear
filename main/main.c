@@ -16,6 +16,7 @@
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -105,6 +106,51 @@ static void handle_input(const input_event_t *in)
         }
         return;
     }
+    // 版本详情页:OK 触发检查更新,长按 DOWN 返回状态页。
+    if (s_screen == SB_SCREEN_VERSION) {
+        if (in->event == BSP_BTN_CLICK && in->btn == BSP_BTN_OK) {
+            if (bsp_lvgl_lock(300)) {
+                sb_ui_version_check();
+                bsp_lvgl_unlock();
+            }
+        } else if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
+            ui_show_locked(SB_SCREEN_STATS);
+        }
+        return;
+    }
+    // 状态页:UP/DOWN 在行间移动光标,OK 进入该行对应的下一级页面。
+    if (s_screen == SB_SCREEN_STATS) {
+        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_UP) {
+            ui_show_locked(SB_SCREEN_SETTINGS);   // 长按上键进设置
+            return;
+        }
+        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
+            ui_show_locked(SB_SCREEN_HOME);
+            return;
+        }
+        if (in->event != BSP_BTN_CLICK) {
+            return;
+        }
+        if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
+            const int delta = (in->btn == BSP_BTN_DOWN) ? 1 : -1;
+            if (bsp_lvgl_lock(300)) {
+                sb_ui_stats_move(delta);
+                bsp_lvgl_unlock();
+            }
+        } else if (in->btn == BSP_BTN_OK) {
+            int cursor = 0;
+            int version_row = 0;
+            if (bsp_lvgl_lock(300)) {
+                cursor = sb_ui_stats_cursor();
+                version_row = sb_ui_stats_version_row();
+                bsp_lvgl_unlock();
+            }
+            if (cursor == version_row) {
+                ui_show_locked(SB_SCREEN_VERSION);
+            }
+        }
+        return;
+    }
     if (in->event != BSP_BTN_CLICK) {
         return;
     }
@@ -112,14 +158,8 @@ static void handle_input(const input_event_t *in)
         // OK 单击 = 软暂停 / 继续(保持会话不断)。
         sb_recorder_set_paused(!sb_recorder_paused());
     } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        // 主页 <-> 状态页;状态页上再按 UP 进设置页。
-        if (s_screen == SB_SCREEN_HOME) {
-            ui_show_locked(SB_SCREEN_STATS);
-        } else if (s_screen == SB_SCREEN_STATS && in->btn == BSP_BTN_UP) {
-            ui_show_locked(SB_SCREEN_SETTINGS);
-        } else {
-            ui_show_locked(SB_SCREEN_HOME);
-        }
+        // 主页上按上/下进入状态页(状态页自身的语义在上面单独处理)。
+        ui_show_locked(SB_SCREEN_STATS);
     }
 }
 
@@ -223,6 +263,19 @@ static void app_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "stackbear 全天候录音卡启动");
+    // OTA 回滚:确认本次启动的固件可用。只有跑过这一步,超时未确认的固件才会被
+    // bootloader 回滚(见 sdkconfig 的 ROLLBACK 选项)。放在最前面,表示"能启动
+    // 到这里就算健康";后续业务初始化失败也会保留这颗固件,避免反复回滚。
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (running && esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
+        ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+            ESP_LOGI(TAG, "OTA 固件已确认(%s)", running->label);
+        } else {
+            ESP_LOGW(TAG, "标记固件有效失败");
+        }
+    }
     if (sb_config_init() != ESP_OK) {
         ESP_LOGE(TAG, "配置初始化失败");
     }

@@ -10,7 +10,9 @@
 #include "sb_config.h"
 #include "sb_net.h"
 #include "sb_cache.h"
+#include "sb_ota.h"
 #include "sb_recorder.h"
+#include "sb_version.h"
 #include "sb_uplink.h"
 
 #define C_BG      0x0E1216
@@ -27,18 +29,30 @@ static lv_obj_t *s_stats_scr;
 static lv_obj_t *s_prov_scr;
 static lv_obj_t *s_set_scr;
 static lv_obj_t *s_set_toggle;
-static lv_obj_t *s_set_sizes[3];
+static lv_obj_t *s_set_sizes[SB_CACHE_MAX_LIMIT_MB];
 static lv_obj_t *s_set_status;
+static lv_obj_t *s_ver_scr;
+static lv_obj_t *s_ver_slot;
+static lv_obj_t *s_ver_git;
+static lv_obj_t *s_ver_time;
+static lv_obj_t *s_ver_btn;
+static lv_obj_t *s_ver_msg;
 static lv_obj_t *s_home_state;
 static lv_obj_t *s_home_sub;
 static lv_obj_t *s_home_batt;
 static lv_obj_t *s_home_seg;
 static lv_obj_t *s_home_sent;
 static lv_obj_t *s_home_drop;
-static lv_obj_t *s_stats_rows[6];
+// 状态页行数(含 Version)。光标停在这些行上,靠 sb_ui_stats_move 移动。
+#define STATS_ROWS 9
+#define STATS_VERSION_ROW (STATS_ROWS - 1)
+static lv_obj_t *s_stats_rows[STATS_ROWS];
+static lv_obj_t *s_stats_cards[STATS_ROWS];
+static int s_stats_cursor = STATS_VERSION_ROW;   // 默认停在 Version 上,少按几下
 static lv_obj_t *s_prov_ap;
 
 static void refresh_settings(void);
+static void build_version(void);
 static lv_timer_t *s_timer;
 static char s_ap_name[40] = "";
 
@@ -109,17 +123,18 @@ static void build_home(void)
 static void build_stats(void)
 {
     // Wi-Fi 行同时给出 SSID;地址拆成 DEVICE IP / SERVER IP,不再单列 Server。
-    // 最后两行是离线队列:关着也显示,让人知道有这个功能、当前是什么状态。
-    static const char *names[8] = {"State", "Wi-Fi", "Device IP", "Server IP",
-                                   "Device", "Seg/Sent", "Cache", "Queue"};
+    // 行是一组可高亮的条目:光标停在某行上、按 OK 进入下一级(目前只有 Version 有)。
+    static const char *names[STATS_ROWS] = {"State", "Wi-Fi", "Device IP", "Server IP",
+                                            "Device", "Seg/Sent", "Cache", "Queue",
+                                            "Version"};
     s_stats_scr = base_screen("STATUS");
-    for (int i = 0; i < 8; i++) {
-        lv_obj_t *c = card(s_stats_scr, 12, 38 + i * 35, 216, 31, C_CARD);
+    for (int i = 0; i < STATS_ROWS; i++) {
+        lv_obj_t *c = card(s_stats_scr, 12, 38 + i * 32, 216, 29, C_CARD);
         label(c, names[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_t *k = lv_obj_get_child(c, 0);
-        lv_obj_align(k, LV_ALIGN_LEFT_MID, 12, 0);
+        lv_obj_align(lv_obj_get_child(c, 0), LV_ALIGN_LEFT_MID, 12, 0);
         s_stats_rows[i] = label(c, "-", &lv_font_montserrat_14, C_TEXT);
         lv_obj_align(s_stats_rows[i], LV_ALIGN_RIGHT_MID, -12, 0);
+        s_stats_cards[i] = c;
     }
 }
 
@@ -142,12 +157,12 @@ static void build_settings(void)
     s_set_usage = label(state, "", &lv_font_montserrat_14, C_MUTED);
     lv_obj_align(s_set_usage, LV_ALIGN_BOTTOM_MID, 0, -12);
 
-    // 容量选择:三个值一排,选中的用强调色 + 更亮的底,不做边框/阴影堆叠。
+    // 容量选择:两个值一排(分区约 2 MB,上限即 2),选中的用强调色 + 更亮的底。
     lv_obj_t *cap = label(s_set_scr, "Queue size", &lv_font_montserrat_14, C_MUTED);
     lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 12, 146);
-    static const char *sizes[3] = {"1 MB", "2 MB", "3 MB"};
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *b = card(s_set_scr, 12 + i * 74, 166, 68, 44, C_CARD);
+    static const char *sizes[SB_CACHE_MAX_LIMIT_MB] = {"1 MB", "2 MB"};
+    for (int i = 0; i < (int)SB_CACHE_MAX_LIMIT_MB; i++) {
+        lv_obj_t *b = card(s_set_scr, 12 + i * 110, 166, 104, 44, C_CARD);
         s_set_sizes[i] = label(b, sizes[i], &lv_font_montserrat_14, C_MUTED);
         lv_obj_center(s_set_sizes[i]);
     }
@@ -248,6 +263,8 @@ static void refresh(lv_timer_t *t)
         lv_label_set_text_fmt(s_home_drop, "%lu", (unsigned long)sb_uplink_frames_dropped());
     }
     if (s_stats_rows[0]) {
+        // Version 行显示当前版本短串。
+        lv_label_set_text(s_stats_rows[STATS_VERSION_ROW], sb_version_short());
         lv_label_set_text(s_stats_rows[0], st);
         lv_obj_set_style_text_color(s_stats_rows[0], lv_color_hex(color), 0);
         const sb_config_t *cfg = sb_config_get();
@@ -277,6 +294,8 @@ static void refresh(lv_timer_t *t)
         }
     }
     refresh_settings();
+    refresh_stats_cursor();
+    refresh_version();
 }
 
 void sb_ui_init(void)
@@ -284,9 +303,42 @@ void sb_ui_init(void)
     build_home();
     build_stats();
     build_settings();
+    build_version();
     build_provision();
     s_timer = lv_timer_create(refresh, 500, NULL);
     lv_screen_load(s_home_scr);
+}
+
+// 版本详情页:一行 git 提交、一行编译时间、一个"检查更新"按钮 + 结果状态行。
+// 布局仍按 taste 规范:大字号承担信息层级,按钮用强调色,不加装饰。
+static void build_version(void)
+{
+    s_ver_scr = base_screen("VERSION");
+    lv_obj_t *c = card(s_ver_scr, 12, 42, 216, 96, C_CARD);
+    label(c, "Firmware", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(lv_obj_get_child(c, 0), LV_ALIGN_TOP_LEFT, 12, 8);
+    lv_obj_t *v = label(c, sb_version_short(), &lv_font_montserrat_20, C_TEXT);
+    lv_obj_align(v, LV_ALIGN_TOP_LEFT, 12, 30);
+    s_ver_slot = label(c, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(s_ver_slot, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
+
+    // git 与编译时间各一行 —— 完整信息,不缩写成图标。
+    s_ver_git = label(s_ver_scr, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_ver_git, 216);
+    lv_label_set_long_mode(s_ver_git, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_ver_git, LV_ALIGN_TOP_LEFT, 12, 148);
+    s_ver_time = label(s_ver_scr, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_ver_time, 216);
+    lv_obj_align(s_ver_time, LV_ALIGN_TOP_LEFT, 12, 190);
+
+    // 按钮:选中时用强调色底,未选中是普通卡面。
+    lv_obj_t *b = card(s_ver_scr, 12, 222, 216, 40, C_CARD);
+    s_ver_btn = label(b, "Check for update", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_center(s_ver_btn);
+    s_ver_msg = label(s_ver_scr, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_ver_msg, 216);
+    lv_label_set_long_mode(s_ver_msg, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_ver_msg, LV_ALIGN_TOP_LEFT, 12, 268);
 }
 
 void sb_ui_show(sb_screen_t screen)
@@ -294,6 +346,7 @@ void sb_ui_show(sb_screen_t screen)
     switch (screen) {
     case SB_SCREEN_STATS: lv_screen_load(s_stats_scr); break;
     case SB_SCREEN_SETTINGS: lv_screen_load(s_set_scr); break;
+    case SB_SCREEN_VERSION: lv_screen_load(s_ver_scr); break;
     case SB_SCREEN_PROVISION: lv_screen_load(s_prov_scr); break;
     default: lv_screen_load(s_home_scr); break;
     }
@@ -349,7 +402,7 @@ static void refresh_settings(void)
             lv_label_set_text(s_set_usage, "disabled - audio is not buffered");
         }
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < (int)SB_CACHE_MAX_LIMIT_MB; i++) {
         if (s_set_sizes[i] == NULL) {
             continue;
         }
@@ -359,6 +412,86 @@ static void refresh_settings(void)
         lv_obj_set_style_bg_color(lv_obj_get_parent(s_set_sizes[i]),
                                   lv_color_hex(selected ? 0x24303F : C_CARD), 0);
     }
+}
+
+// 状态页光标高亮:选中的那一行用强调色边线,不做发光/阴影。
+static void refresh_stats_cursor(void)
+{
+    for (int i = 0; i < STATS_ROWS; i++) {
+        if (s_stats_cards[i] == NULL) {
+            continue;
+        }
+        const bool sel = (i == s_stats_cursor);
+        lv_obj_set_style_border_width(s_stats_cards[i], sel ? 2 : 0, 0);
+        lv_obj_set_style_border_color(s_stats_cards[i], lv_color_hex(C_ACCENT), 0);
+    }
+}
+
+static void refresh_version(void)
+{
+    if (s_ver_scr == NULL) {
+        return;
+    }
+    if (s_ver_slot) {
+        lv_label_set_text_fmt(s_ver_slot, "slot %s", sb_version_slot());
+    }
+    if (s_ver_git) {
+        lv_label_set_text_fmt(s_ver_git, "commit %s\nbranch %s",
+                              SB_GIT_COMMIT, SB_GIT_BRANCH);
+    }
+    if (s_ver_time) {
+        lv_label_set_text_fmt(s_ver_time, "built %s", SB_BUILD_TIME);
+    }
+    if (s_ver_msg) {
+        // OTA 状态/进度由 sb_ota 提供;空闲时不显示,免得留一行无用文字。
+        const sb_ota_state_t st = sb_ota_state();
+        if (st == SB_OTA_IDLE) {
+            lv_label_set_text(s_ver_msg, "");
+        } else {
+            lv_label_set_text(s_ver_msg, sb_ota_message());
+            uint32_t color = C_MUTED;
+            if (st == SB_OTA_UP_TO_DATE) color = C_OK;
+            else if (st == SB_OTA_FAILED) color = C_BAD;
+            else if (st == SB_OTA_DOWNLOADING) color = C_ACCENT;
+            lv_obj_set_style_text_color(s_ver_msg, lv_color_hex(color), 0);
+        }
+    }
+    if (s_ver_btn) {
+        // 下载中禁用按钮外观,避免重复触发。
+        lv_obj_set_style_text_color(s_ver_btn,
+                                    lv_color_hex(sb_ota_busy() ? C_MUTED : C_ACCENT), 0);
+    }
+}
+
+void sb_ui_version_check(void)
+{
+    if (sb_ota_busy()) {
+        return;
+    }
+    (void)sb_ota_check_start();
+}
+
+void sb_ui_stats_move(int delta)
+{
+    s_stats_cursor += delta;
+    if (s_stats_cursor < 0) {
+        s_stats_cursor = 0;
+    }
+    if (s_stats_cursor >= STATS_ROWS) {
+        s_stats_cursor = STATS_ROWS - 1;
+    }
+    refresh_stats_cursor();
+}
+
+// 返回当前状态页光标所在的行,供 main 判断按 OK 该进哪一级。
+int sb_ui_stats_cursor(void)
+{
+    return s_stats_cursor;
+}
+
+int sb_ui_stats_version_row(void)
+{
+    return STATS_VERSION_ROW;
 }
 
 void sb_ui_set_ap_name(const char *name)

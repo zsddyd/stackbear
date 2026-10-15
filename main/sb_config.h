@@ -10,11 +10,10 @@
 #define SB_HOST_MAX   64
 #define SB_DEVID_MAX  16
 
-// 离线音频队列分区(partitions.csv 的 audioq)为 4 MB;可配置上限不超过 3 MB,
-// 留出余量并符合产品约束。
+// 离线音频队列分区(partitions.csv 的 audioq)约 2 MB;按用户约束,可选上限
+// 只到 2 MB(队列大小从 1 MB 起)。
 #define SB_CACHE_PARTITION   "audioq"
-#define SB_CACHE_PART_SIZE   (4u * 1024u * 1024u)
-#define SB_CACHE_MAX_LIMIT_MB 3u
+#define SB_CACHE_MAX_LIMIT_MB 2u
 
 // 出厂默认服务器(可用 Kconfig/编译期覆盖)。云端服务地址在 NVS 里可改。
 #ifndef SB_DEFAULT_SRV_HOST

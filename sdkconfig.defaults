@@ -31,6 +31,17 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
+# --- OTA ---
+# 双槽 OTA:新固件写进备用槽,校验通过后切过去启动。打开回滚后,新固件若在
+# "确认健康"之前崩溃,或未调用 esp_ota_mark_app_valid_cancel_rollback,
+# bootloader 会自动切回上一个可用槽,降低 OTA 变砖风险。
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="0.5.0"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_ESP_ERR_TO_NAME_LOOKUP=y
+
+# --- 分区表已在 partitions.csv 中改为 ota_0/ota_1/fota/audioq ---
+
 # --- Bluetooth LE / NimBLE ---
 # ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。
 CONFIG_BT_ENABLED=y

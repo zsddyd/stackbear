@@ -1,10 +1,14 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
-# App partition is 3.94 MB, far above the ~1.4 MB image, and leaves the upper
-# 4 MB free for the offline audio queue.
-factory,  app,  factory, 0x10000,  0x3f0000,
-# Raw record ring for the optional offline audio queue (no filesystem: fixed
-# 512-byte slots are simpler and avoid a managed component). Accessed through
-# esp_partition; the application decides how much of it to use.
-audioq,   data, spiffs,  0x400000, 0x400000,
+# Two OTA slots. The spare slot doubles as the download target, so OTA needs no
+# separate staging partition. 0x2F0000 each (~2.94 MB) fits the ~1.4 MB image
+# with room to grow; the bootloader picks between them via 'fota'.
+ota_0,    app,  ota_0,   0x10000,  0x2F0000,
+ota_1,    app,  ota_1,   0x300000, 0x2F0000,
+# OTA slot selection data. Named 'fota' by project convention (the subtype 'ota'
+# is what ESP-IDF actually matches on).
+fota,     data, ota,     0x5F0000, 0x2000,
+# Offline audio queue: raw fixed-size slots, no filesystem. ~2 MB, so the
+# Settings page offers 1 MB and 2 MB.
+audioq,   data, spiffs,  0x5F2000, 0x20E000,

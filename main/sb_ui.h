@@ -8,6 +8,7 @@ typedef enum {
     SB_SCREEN_HOME = 0,
     SB_SCREEN_STATS,
     SB_SCREEN_SETTINGS,
+    SB_SCREEN_VERSION,
     SB_SCREEN_PROVISION,
 } sb_screen_t;
 
@@ -24,3 +25,11 @@ void sb_ui_set_ap_name(const char *name);
 // move: 在 1..SB_CACHE_MAX_LIMIT_MB 之间调整容量;toggle: 开关离线队列。
 void sb_ui_settings_move(int delta);
 void sb_ui_settings_toggle(void);
+
+// 版本页交互:在 "Check for update" 上按 OK 触发检查。
+void sb_ui_version_check(void);
+
+// 状态页光标:移动 / 读取所在行 / Version 行的序号。
+void sb_ui_stats_move(int delta);
+int sb_ui_stats_cursor(void);
+int sb_ui_stats_version_row(void);
