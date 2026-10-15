@@ -254,6 +254,26 @@ session, and `STACKBEAR_ASR_RETRIES` (default 3) retries a request because some
 gateways route one model across a pool where only part of the workers accept
 audio.
 
+### Querying the recordings
+
+Transcriptions live beside their audio
+(`data/<device>/<session>/{audio.adpcm, meta.json, transcript.txt, transcript.json}`),
+and `/transcripts` is the single entry point over them:
+
+| Request | Result |
+| --- | --- |
+| `GET /transcripts?limit=20` | Index of sessions, newest first: device, time, duration, segment count, whether a transcript exists, character count and a one-line preview |
+| `GET /transcripts?dev=<id>` | The same, filtered to one device |
+| `GET /transcripts?q=<word>` | Content search; each hit carries the matching lines |
+| `GET /transcript/<dev>/<session>` | One session's full text |
+
+The index reports transcription state per session, so finished work is
+distinguishable from pending, and the search reads the transcripts on disk
+rather than an index that could drift away from them. A non-ASCII search word
+must be URL-encoded: the receiver restores the query string to UTF-8 before
+matching, because decoding the request line as latin1 (correct for headers)
+otherwise leaves a Chinese word as mojibake that never matches.
+
 ## Build, flash and test workflow
 
 - **Build:** GitHub Actions only (`.github/workflows/build-firmware.yml`), which
