@@ -30,7 +30,6 @@
 static const char *TAG = "stackbear";
 
 #define INPUT_QUEUE_DEPTH 8
-#define LINK_RETRY_MS     8000
 
 typedef struct {
     bsp_btn_t btn;
@@ -176,22 +175,20 @@ static void app_task(void *arg)
             sb_recorder_start();
             vTaskDelay(pdMS_TO_TICKS(200));
         }
+        // 上行任务只启动一次:它自己负责 TCP 连接与重连,WiFi 通了就会发 HELLO。
+        if (!s_uplink_started) {
+            sb_uplink_start();
+            sb_uplink_begin_session();
+            s_uplink_started = true;
+        }
         if (sb_net_state() == SB_NET_UP) {
-            // 只在第一次连上时启动上行并开会话;每秒重复 begin_session 会让设备
-            // 反复重发 HELLO。
-            if (!s_uplink_started) {
-                sb_uplink_start();
-                sb_uplink_begin_session();
-                s_uplink_started = true;
-            }
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        ESP_LOGI(TAG, "连接热点 '%s' ...", cfg->ssid);
-        if (sb_net_sta_connect(cfg->ssid, cfg->pass) != ESP_OK) {
-            ESP_LOGW(TAG, "连接失败, %d ms 后重试", LINK_RETRY_MS);
-            vTaskDelay(pdMS_TO_TICKS(LINK_RETRY_MS));
-        }
+        // 连接与断线重连都由 sb_net 负责:这里周期性地"确保连接"即可,断线后
+        // 会由它的指数退避定时器在后台重连,不需要应用层再写重试逻辑。
+        (void)sb_net_ensure_connected();
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 

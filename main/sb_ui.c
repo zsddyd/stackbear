@@ -142,7 +142,14 @@ static const char *state_text(uint32_t *color)
     switch (sb_net_state()) {
     case SB_NET_UP: break;
     case SB_NET_CONNECTING: *color = C_WARN; return "CONNECTING";
-    default: *color = C_BAD; return "NO WI-FI";
+    default:
+        // 退避重连中:这不是故障,给不同的措辞与颜色,免得看着像坏了。
+        if (sb_net_reconnecting()) {
+            *color = C_WARN;
+            return "RECONNECTING";
+        }
+        *color = C_BAD;
+        return "NO WI-FI";
     }
     if (sb_recorder_paused()) {
         *color = C_WARN;

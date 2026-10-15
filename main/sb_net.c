@@ -11,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -29,6 +30,29 @@ static char s_ip[16] = "";
 static bool s_wifi_inited;
 static bool s_provisioning;
 static volatile int s_prov_result;
+
+// --- 断线重连(由本模块统一负责) -------------------------------------------
+// 目标:热点重启/短暂掉线后尽快恢复,并且不依赖应用主循环的轮询。
+// 做法:收到 DISCONNECTED 事件后起一个轻量定时器,按指数退避(1s→2s→4s→8s 封顶)
+// 重新 esp_wifi_connect()。ESP-IDF 的自动重连没有退避控制,这里自己实现以便观察和
+// 在界面上显示状态。重连用的凭据仍在驱动里(上次 set_config 的 STA 配置),不需要
+// 重新下发,所以重连路径不会碰到 ESP_ERR_WIFI_STATE 那类竞态。
+#define RECONNECT_MIN_MS   1000
+#define RECONNECT_MAX_MS   8000
+// 掉线多久算"真正失败"(用于把状态从 CONNECTING 降级,仅影响显示)。
+#define CONNECT_TIMEOUT_MS 15000
+
+static esp_timer_handle_t s_reconnect_timer;
+static uint32_t s_backoff_ms = RECONNECT_MIN_MS;
+static volatile bool s_reconnecting;
+static volatile bool s_want_connect;   // 有凭据且未在配网 => 期望保持连接
+static char s_ssid[33];
+static char s_pass[65];
+static SemaphoreHandle_t s_connect_lock;
+
+static void reconnect_timer_cb(void *arg);
+static void schedule_reconnect(void);
+static esp_err_t apply_sta_config(void);
 
 static void set_ip_from_netif(void)
 {
@@ -56,14 +80,83 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         if (s_events) {
             xEventGroupSetBits(s_events, STA_FAIL_BIT);
         }
+        // 只要还要保持连接(有凭据且未配网),就安排退避重连。断言连接请求的那次
+        // 主动断开也算这里,所以由 s_want_connect 决定要不要重连,而不是看原因码。
+        if (s_want_connect && !s_provisioning) {
+            schedule_reconnect();
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_state = SB_NET_UP;
         set_ip_from_netif();
+        s_reconnecting = false;
+        s_backoff_ms = RECONNECT_MIN_MS;   // 连上即重置退避
         if (s_events) {
             xEventGroupSetBits(s_events, STA_CONNECT_BIT);
         }
         ESP_LOGI(TAG, "STA 已联网, IP=%s", s_ip);
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
+        // 租约丢失(热点重启常见):不等 DISCONNECTED,先降级状态并安排重连。
+        s_state = SB_NET_DOWN;
+        s_ip[0] = '\0';
+        if (s_want_connect && !s_provisioning) {
+            schedule_reconnect();
+        }
     }
+}
+
+// 用上次保存的凭据下发 STA 配置并连接。断开在前,避免 "sta is connecting,
+// cannot set config" 的状态竞态。
+static esp_err_t apply_sta_config(void)
+{
+    if (s_provisioning) {
+        return ESP_ERR_INVALID_STATE;   // 配网期间由网页那侧直接连接
+    }
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password));
+    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (m != ESP_OK && m != ESP_ERR_WIFI_STATE) {
+        return m;
+    }
+    (void)esp_wifi_disconnect();
+    esp_err_t e = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (e != ESP_OK) {
+        return e;
+    }
+    return esp_wifi_connect();
+}
+
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_want_connect || s_provisioning || s_state == SB_NET_UP) {
+        s_reconnecting = false;
+        return;
+    }
+    ESP_LOGI(TAG, "重连 '%s' (第 %u ms 退避后)", s_ssid, (unsigned)s_backoff_ms);
+    s_state = SB_NET_CONNECTING;
+    if (apply_sta_config() != ESP_OK) {
+        schedule_reconnect();   // 连请求都发不出去,继续退避
+    }
+    // 成功与否由 GOT_IP / DISCONNECTED 事件决定。
+}
+
+static void schedule_reconnect(void)
+{
+    if (s_reconnect_timer == NULL) {
+        return;
+    }
+    if (esp_timer_is_active(s_reconnect_timer)) {
+        return;   // 已有一次待触发,不重复排队
+    }
+    s_reconnecting = true;
+    const uint32_t delay = s_backoff_ms;
+    if (s_backoff_ms < RECONNECT_MAX_MS) {
+        s_backoff_ms = (s_backoff_ms * 2 > RECONNECT_MAX_MS) ? RECONNECT_MAX_MS
+                                                             : s_backoff_ms * 2;
+    }
+    esp_timer_start_once(s_reconnect_timer, (uint64_t)delay * 1000);
 }
 
 esp_err_t sb_net_init(void)
@@ -86,12 +179,23 @@ esp_err_t sb_net_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL));
+        IP_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     // 已启动时再调会返回 ESP_ERR_WIFI_STATE/ESP_OK;只容忍状态类错误,不 abort。
     esp_err_t se = esp_wifi_start();
     if (se != ESP_OK && se != ESP_ERR_WIFI_STATE) {
         return se;
+    }
+    s_connect_lock = xSemaphoreCreateMutex();
+    if (s_connect_lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_timer_create_args_t timer_args = {
+        .callback = reconnect_timer_cb,
+        .name = "sb_reconnect",
+    };
+    if (esp_timer_create(&timer_args, &s_reconnect_timer) != ESP_OK) {
+        return ESP_ERR_NO_MEM;
     }
     s_wifi_inited = true;
     return ESP_OK;
@@ -102,31 +206,28 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass)
     if (ssid == NULL || ssid[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
-    wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, pass ? pass : "", sizeof(wc.sta.password));
-    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    // 记住凭据:重连同一条网络时不重新下发配置(避免状态竞态),但第一次或换了
+    // 热点必须重新 set_config。
+    const bool same = (strcmp(s_ssid, ssid) == 0) && (strcmp(s_pass, pass ? pass : "") == 0);
+    strlcpy(s_ssid, ssid, sizeof(s_ssid));
+    strlcpy(s_pass, pass ? pass : "", sizeof(s_pass));
+
     xEventGroupClearBits(s_events, STA_CONNECT_BIT | STA_FAIL_BIT);
     s_state = SB_NET_CONNECTING;
-    // 配网期间必须保持 APSTA:此刻手机正连着 SoftAP 打开配置页,若切回 STA-only
-    // 会把 SoftAP 关掉,手机与配置页的连接随之断开,POST /save 永远拿不到响应。
-    if (!s_provisioning) {
-        esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
-        if (m != ESP_OK && m != ESP_ERR_WIFI_STATE) {
-            s_state = SB_NET_DOWN;
-            return m;
-        }
-    }
-    // STA 若还在 connecting,set_config 会返回 ESP_ERR_WIFI_STATE。这里先断开
-    // (断开本身可能返回"未连接",忽略),再配置 —— 绝不能再用 ESP_ERROR_CHECK,
-    // 那会在状态冲突时直接 abort 重启设备。
-    (void)esp_wifi_disconnect();
-    esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_STA, &wc);
-    if (cfg_err != ESP_OK) {
+    s_backoff_ms = RECONNECT_MIN_MS;
+
+    if (xSemaphoreTake(s_connect_lock, pdMS_TO_TICKS(5000)) != pdTRUE) {
         s_state = SB_NET_DOWN;
-        return cfg_err;
+        return ESP_ERR_TIMEOUT;
     }
-    esp_err_t err = esp_wifi_connect();
+    esp_err_t err;
+    if (same && !s_provisioning) {
+        // 同一热点:直接重连,不碰 set_config。
+        err = esp_wifi_connect();
+    } else {
+        err = apply_sta_config();
+    }
+    xSemaphoreGive(s_connect_lock);
     if (err != ESP_OK) {
         s_state = SB_NET_DOWN;
         return err;
@@ -135,15 +236,61 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass)
     const EventBits_t bits = xEventGroupWaitBits(
         s_events, STA_CONNECT_BIT | STA_FAIL_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(15000));
     if (bits & STA_CONNECT_BIT) {
+        s_want_connect = true;   // 连上后开启断线自动重连
         return ESP_OK;
     }
     s_state = SB_NET_DOWN;
-    esp_wifi_disconnect();
+    // 交给退避重连继续尝试(而不是把凭据丢掉)。
+    if (!s_provisioning) {
+        s_want_connect = true;
+        schedule_reconnect();
+    }
     return ESP_FAIL;
+}
+
+esp_err_t sb_net_ensure_connected(void)
+{
+    if (s_provisioning) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_ssid[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;   // 还没有凭据
+    }
+    s_want_connect = true;
+    if (s_state == SB_NET_UP || s_state == SB_NET_CONNECTING) {
+        return ESP_OK;                  // 已连上或正在连(含退避后的重连)
+    }
+    // 处于 DOWN 且没有排队的重连:立刻发起一次。
+    if (s_reconnecting) {
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "发起连接 '%s'", s_ssid);
+    s_state = SB_NET_CONNECTING;
+    if (xSemaphoreTake(s_connect_lock, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    const esp_err_t err = apply_sta_config();
+    xSemaphoreGive(s_connect_lock);
+    if (err != ESP_OK) {
+        s_state = SB_NET_DOWN;
+        schedule_reconnect();
+    }
+    return err;
+}
+
+bool sb_net_reconnecting(void)
+{
+    return s_reconnecting;
 }
 
 void sb_net_sta_disconnect(void)
 {
+    // 显式断开 = 用户意图,停止自动重连(配网/切换网络时用)。
+    s_want_connect = false;
+    if (s_reconnect_timer && esp_timer_is_active(s_reconnect_timer)) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+    s_reconnecting = false;
     esp_wifi_disconnect();
     s_state = SB_NET_DOWN;
     s_ip[0] = '\0';
@@ -182,6 +329,12 @@ esp_err_t sb_net_provision_start(void)
     }
     s_prov_result = 0;
     s_provisioning = true;
+    // 配网期间暂停自动重连,免得后台重连干扰 APSTA 与网页验证。
+    s_want_connect = false;
+    if (s_reconnect_timer && esp_timer_is_active(s_reconnect_timer)) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+    s_reconnecting = false;
     // 先建 netif 再设模式:netif 创建应在 driver 模式切换之前完成。
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
@@ -223,6 +376,10 @@ esp_err_t sb_net_provision_stop(void)
     sb_net_provision_web_stop();
     s_provisioning = false;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    // 配网成功后恢复"保持连接",让掉线能自动恢复。
+    if (s_ssid[0] != '\0') {
+        s_want_connect = true;
+    }
     return ESP_OK;
 }
 

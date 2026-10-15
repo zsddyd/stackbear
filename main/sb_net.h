@@ -15,6 +15,15 @@ esp_err_t sb_net_init(void);
 
 // 以 STA 连接指定热点。已连接则先断开。失败返回错误。
 esp_err_t sb_net_sta_connect(const char *ssid, const char *pass);
+
+// 确保正在连接或已连接(幂等)。若无凭据或正在配网,返回 ESP_ERR_INVALID_STATE。
+// 调用方(应用主循环)只需周期性调用它,不必自己实现重试:断开后的重连由本模块
+// 用指数退避在后台完成。
+esp_err_t sb_net_ensure_connected(void);
+
+// 是否正在后台等待重连(退避计时中)。用于界面/日志区分"闲置"与"重连中"。
+bool sb_net_reconnecting(void);
+
 void sb_net_sta_disconnect(void);
 sb_net_state_t sb_net_state(void);
 const char *sb_net_ip(void);   // 未连接返回 ""
