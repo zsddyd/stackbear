@@ -55,8 +55,12 @@ PRESETS = {
     "openrouter": ("https://openrouter.ai/api/v1", "openrouter", "qwen/qwen3.8-omni-flash",
                    "STACKBEAR_ASR_API_KEY"),
     # OpenCode Go: subscription access to, among others, audio-capable models.
-    # mimo-v2.6-flash is the fast/cheap omni option, best fit for transcription.
-    "opencode-go": ("https://opencode.ai/inference/go/v1", "opencode-go", "mimo-v2.6-flash",
+    # Measured on real recordings: MiMo is a *reasoning* omni model, so it returns
+    # its own deliberation ("嗯", "Thanks for the request.", descriptions of the
+    # sound) instead of a transcript, and it is not reproducible - five calls on
+    # one clip produced five different answers and one empty reply. Keep it
+    # selectable but no longer the default.
+    "opencode-go": ("https://opencode.ai/inference/go/v1", "opencode-go", "mimo-v2.6-pro",
                     "OPENCODE_API_KEY"),
 }
 DEFAULT_OPENROUTER_URL, DEFAULT_VENDOR, DEFAULT_MODEL, _ = PRESETS[DEFAULT_PROVIDER]

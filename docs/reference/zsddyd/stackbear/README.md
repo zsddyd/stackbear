@@ -198,6 +198,16 @@ splits it on the recorded VAD boundaries and transcribes each utterance;
 `--dry-run` checks the setup without calling the API, and `--write` stores
 `transcript.txt` / `transcript.json` beside the session.
 
+VAD produces many short fragments (85 s of speech arrived as 62 segments, some
+60 ms long), and speech models answer fragments that small with stock fillers or
+with a description of the sound rather than a transcript - the missing
+ingredient is context. Consecutive fragments are
+therefore merged into blocks of at least 8 s (never more than 30 s) before
+submitting; an utterance longer than the maximum is kept whole rather than cut,
+and a short trailing block is folded into the previous one. On the 85 s
+recording this turned 62 requests into 8 with identical total coverage, and the
+output changed from fragments to a readable conversation.
+
 The receiver can also transcribe by itself: when a session ends (an `END` frame,
 a reconnect or a timeout), it decodes and transcribes in a worker thread so the
 receive loop never stalls, then writes `transcript.txt`, `transcript.json` and

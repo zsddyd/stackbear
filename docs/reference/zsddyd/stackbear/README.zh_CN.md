@@ -162,6 +162,12 @@ OpenRouter 上同一模型的路由——后者返回空文本);`gemini-4-argon-
 切分并逐段转写;`--dry-run` 只检查配置不调用 API,`--write` 把 `transcript.txt` /
 `transcript.json` 写回会话目录。
 
+VAD 会切出大量碎段(85 秒语音被切成 62 段,最短 60ms),而语音模型面对这么短的
+片段只会回常见短语("嗯""Thank you.")或者干脆描述声音,而不是转写 —— 缺的是上下文。
+因此提交前会把相邻段合并成至少 8 秒的块(上限 30 秒);超过上限的单段保持完整而不是
+切开;末尾的短块会并回前一块。在那段 85 秒录音上,请求数从 62 降到 8、总覆盖完全一致,
+输出也从碎片变成了可读的对话。
+
 接收端也会**自己转写**:会话结束(收到 END 帧、重连或超时)后在工作线程里解码并转写,
 不阻塞接收循环,然后把 `transcript.txt`、`transcript.json`、`transcript.status.json`
 写进会话目录。`STACKBEAR_ASR_AUTO=0` 可关闭;`STACKBEAR_ASR_PER_SEGMENT`(默认开)选择

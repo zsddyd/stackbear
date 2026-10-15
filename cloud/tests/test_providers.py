@@ -91,7 +91,9 @@ def test_preset_and_override_behaviour() -> None:
         "OPENCODE_API_KEY": "test-key-not-a-secret",
     })
     check(cfg.base_url == "https://opencode.ai/inference/go/v1", f"go base_url {cfg.base_url}")
-    check(cfg.model == "mimo-v2.6-flash", f"go default model {cfg.model}")
+    # MiMo is selectable but not the OpenCode Go default: measured on real
+    # recordings it returns its own deliberation instead of a transcript.
+    check(cfg.model == "mimo-v2.6-pro", f"go default model {cfg.model}")
     check(cfg.api_key == "test-key-not-a-secret", "go key from OPENCODE_API_KEY")
     check(cfg.vendor == "opencode-go", f"go vendor {cfg.vendor}")
     check("test-key" not in cfg.describe(), "describe() must not leak the key")

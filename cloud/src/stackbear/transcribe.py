@@ -25,11 +25,25 @@ import wave
 
 from . import adpcm, providers
 
+
+class NoSpeech(Exception):
+    """The session holds no audio: VAD detected no speech. This is normal for a
+    quiet session and must not be reported as a failure."""
+
+
+class AudioCorrupt(Exception):
+    """The session has audio bytes but nothing decodable - a real defect."""
+
+
 # Segments shorter than this are not worth a separate provider call: models tend
 # to answer a 60 ms clip with tool calls or nothing at all, and one bad segment
 # used to abort the whole session. Shorter spans are skipped; if nothing is left,
 # the session is transcribed as a whole.
-MIN_SEGMENT_MS = 400
+# 提交给模型的音频块目标长度。VAD 会把一段连续说话切成很多碎段(实测 85 秒切成
+# 62 段,最小 60ms),而语音模型对一两秒的碎片会退化成"嗯""Thank you."这类高频
+# 短语 —— 缺的是上下文,不是音频质量。因此按下面的目标/上限把相邻段合并后再提交。
+MERGE_TARGET_MS = 8000    # 合并到至少这么长(除非后面没有更多音频)
+MERGE_MAX_MS = 30000      # 单次提交上限,避免一段音频过长(模型限制与成本)
 
 
 @contextlib.contextmanager
@@ -76,9 +90,14 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
     session has no audio.
     """
     src = adpcm.find_audio(session)
-    samples, _ = adpcm.decode_stream(src.read_bytes())
+    samples, bad = adpcm.decode_stream(src.read_bytes())
     if not samples:
-        raise FileNotFoundError(f"nothing decodable in {src}")
+        # 分开两种"空":没有音频文件/文件为空,是 VAD 没检出语音(正常,不该当错误);
+        # 文件里有块但一个都解不出来,才是音频损坏。之前两者都报 "nothing decodable",
+        # 让正常的静音会话看起来像故障。
+        if src.stat().st_size == 0:
+            raise NoSpeech("no audio captured (VAD found no speech)")
+        raise AudioCorrupt(f"{bad} malformed block(s) and no decodable audio in {src}")
     cfg = config or providers.AsrConfig.from_env()
     # `provider` is injectable so the receiver and tests can supply an
     # alternative engine without going through the environment.
@@ -103,9 +122,11 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
     errors: list[dict] = []
     spans = []
     if per_segment:
-        min_samples = MIN_SEGMENT_MS * adpcm.SAMPLE_RATE // 1000
-        spans = [(s, e) for (s, e) in segment_slices(meta, len(samples))
-                 if e - s >= min_samples]
+        # Merge the VAD fragments into blocks long enough to carry context. This
+        # replaces an earlier rule that *dropped* segments shorter than 400 ms,
+        # which silently discarded speech and left the tail of every session as
+        # the fragment the model handles worst.
+        spans = merge_spans(segment_slices(meta, len(samples)))
     if spans:
         for index, (start, end) in enumerate(spans):
             try:
@@ -167,6 +188,44 @@ def segment_slices(meta: dict, total: int) -> list[tuple[int, int]]:
     return spans
 
 
+def merge_spans(spans: list[tuple[int, int]], *, target_ms: int = MERGE_TARGET_MS,
+                max_ms: int = MERGE_MAX_MS, rate: int = 16000) -> list[tuple[int, int]]:
+    """Merge consecutive VAD segments into larger blocks for transcription.
+
+    Speech models need context: submitting the 1.4 s fragments that VAD produces
+    makes even a good model answer with stock phrases, so consecutive segments are
+    grown until the block reaches ``target_ms``, never exceeding ``max_ms``.
+
+    A segment longer than ``max_ms`` is kept whole rather than split - cutting
+    audio mid-utterance is worse than one long request. A trailing block shorter
+    than ``target_ms`` is folded into the previous block when that stays within
+    ``max_ms``, so the tail is not left as the very fragment we are avoiding.
+    """
+    if not spans:
+        return []
+    to_ms = lambda samples: samples * 1000 // rate   # noqa: E731
+
+    merged: list[tuple[int, int]] = []
+    cur_start, cur_end = spans[0]
+    for start, end in spans[1:]:
+        if to_ms(cur_end - cur_start) < target_ms and to_ms(end - cur_start) <= max_ms:
+            cur_end = end            # still short enough: keep growing
+        else:
+            merged.append((cur_start, cur_end))
+            cur_start, cur_end = start, end
+    merged.append((cur_start, cur_end))
+
+    # Fold a short tail back into the previous block when it still fits.
+    if len(merged) >= 2 and to_ms(merged[-1][1] - merged[-1][0]) < target_ms:
+        tail = merged.pop()
+        prev_start, prev_end = merged[-1]
+        if to_ms(tail[1] - prev_start) <= max_ms:
+            merged[-1] = (prev_start, tail[1])
+        else:
+            merged.append(tail)
+    return merged
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transcribe a stored session")
     parser.add_argument("path", help="session directory or audio file")
@@ -187,7 +246,11 @@ def main() -> int:
     src = adpcm.find_audio(session)
     samples, bad = adpcm.decode_stream(src.read_bytes())
     if not samples:
-        print(f"nothing decodable in {src}", file=sys.stderr)
+        # 区分"没录到语音"(正常)和"音频坏了"(缺陷),让退出码也能反映区别。
+        if src.stat().st_size == 0:
+            print(f"no speech in {src} (VAD found nothing)", file=sys.stderr)
+            return 3
+        print(f"audio corrupt: {bad} malformed block(s) in {src}", file=sys.stderr)
         return 1
     info = adpcm.stats(samples)
     print(f"{src}: {info['seconds']:.2f}s, peak {info['peak']}, rms {info['rms']}, bad {bad}",

@@ -373,6 +373,17 @@ def _transcribe_worker(session_dir: pathlib.Path) -> None:
     from . import transcribe as transcribe_mod
 
     status = session_dir / "transcript.status.json"
+    # Pending marker: written before the slow call so that a session interrupted by
+    # a process restart is recognisable afterwards. Without it a kill mid-call
+    # left neither a transcript nor a status file, and the session looked as if it
+    # had never been attempted (an 85 s recording was lost this way).
+    pending = session_dir / "transcript.pending"
+
+    def clear_pending() -> None:
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def note(payload: dict) -> None:
         try:
@@ -384,6 +395,12 @@ def _transcribe_worker(session_dir: pathlib.Path) -> None:
             pass
 
     try:
+        pending.write_text(json.dumps({"started_at": time.time(), "pid": os.getpid()}),
+                           encoding="utf-8")
+    except OSError:
+        pending = None   # 标记写不了不影响转写本身
+
+    try:
         payload = transcribe_mod.transcribe_session(
             session_dir, per_segment=AUTO_PER_SEGMENT)
         transcribe_mod.write_result(session_dir, payload)
@@ -393,9 +410,19 @@ def _transcribe_worker(session_dir: pathlib.Path) -> None:
               "dropped": len(payload.get("errors", [])),
               "usage": [r.get("usage") for r in lines]})
         log(f"[asr] {session_dir} ok model={payload['model']} segments={len(lines)}")
+    except transcribe_mod.NoSpeech as exc:
+        # Not a failure: a quiet session. Record it distinctly so the operator can
+        # tell "nothing was said" from "transcription broke".
+        note({"ok": True, "skipped": "no speech", "detail": str(exc)})
+        log(f"[asr] {session_dir} no speech")
+    except transcribe_mod.AudioCorrupt as exc:
+        note({"ok": False, "error": f"audio corrupt: {exc}"})
+        log(f"[asr] {session_dir} audio corrupt: {exc}")
     except Exception as exc:  # noqa: BLE001 - reported, never fatal to the service
         note({"ok": False, "error": str(exc)})
         log(f"[asr] {session_dir} failed: {exc}")
+    finally:
+        clear_pending()
 
 
 def _schedule_transcribe(session_dir: pathlib.Path) -> None:
@@ -408,6 +435,41 @@ def _schedule_transcribe(session_dir: pathlib.Path) -> None:
         asyncio.get_running_loop().run_in_executor(None, _transcribe_worker, session_dir)
     except RuntimeError:
         _transcribe_worker(session_dir)
+
+
+def find_orphaned_sessions(limit: int = 0) -> list[pathlib.Path]:
+    """Sessions that have audio but no transcript, and no pending marker.
+
+    Two cases: a transcript interrupted by a process restart (the marker survives
+    the kill), and sessions recorded before automatic transcription existed. Both
+    are worth finishing. A session already holding transcript.txt is skipped so a
+    restart does not redo finished work, and one with a pending marker is skipped
+    because another worker is on it.
+    """
+    found: list[pathlib.Path] = []
+    if not DATA.is_dir():
+        return found
+    for audio in DATA.glob("*/*/audio.adpcm"):
+        session = audio.parent
+        if audio.stat().st_size == 0:
+            continue                      # VAD captured nothing; nothing to do
+        if (session / "transcript.txt").is_file():
+            continue                      # already done
+        if (session / "transcript.pending").is_file():
+            continue                      # a worker holds it
+        found.append(session)
+    found.sort(key=lambda p: p.stat().st_mtime)
+    return found[:limit] if limit > 0 else found
+
+
+def requeue_orphaned_sessions(limit: int = 50) -> int:
+    """Re-queue unfinished sessions (bounded). Returns how many were queued."""
+    queued = 0
+    for session in find_orphaned_sessions(limit):
+        log(f"[asr] requeue {session} (unfinished)")
+        _schedule_transcribe(session)
+        queued += 1
+    return queued
 
 
 async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -437,6 +499,14 @@ async def serve(host: str, port: int) -> None:
     server = await asyncio.start_server(_handler, host=host, port=port)
     addrs = ", ".join(sorted({str(s.getsockname()) for s in server.sockets}))
     log(f"stackbear v{__version__} listening on {addrs} (data={DATA})")
+    # 启动时补跑没转写完的会话(进程重启时被杀在途、或早于自动转写存在的旧会话)。
+    # 放在 listen 之后:补跑是后台线程,不影响接收新连接。
+    try:
+        queued = requeue_orphaned_sessions()
+        if queued:
+            log(f"[asr] {queued} unfinished session(s) queued")
+    except Exception as exc:  # noqa: BLE001 - 补跑失败不能挡住服务
+        log(f"[asr] requeue scan failed: {exc}")
     async with server:
         await server.serve_forever()
 
@@ -445,7 +515,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="stackbear 云端接收服务")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=18080)
+    parser.add_argument("--requeue-only", action="store_true",
+                        help="只补跑没转写完的会话然后退出(用于手动回填)")
     args = parser.parse_args()
+    if args.requeue_only:
+        # 同步跑完再退出,便于用一条命令回填历史会话并直接看到结果。
+        pending = find_orphaned_sessions()
+        log(f"{len(pending)} unfinished session(s)")
+        for session in pending:
+            _transcribe_worker(session)
+        return
     try:
         asyncio.run(serve(args.host, args.port))
     except KeyboardInterrupt:
