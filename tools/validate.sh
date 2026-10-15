@@ -100,6 +100,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_local_provider.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_sessions_index.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_glossary.py
+    PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_dedup.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_providers.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_autotranscribe.py
     PYTHONDONTWRITEBYTECODE=1 python3 cloud/tests/test_server.py

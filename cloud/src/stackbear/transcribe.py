@@ -23,8 +23,7 @@ import struct
 import sys
 import wave
 
-from . import adpcm, providers
-from . import glossary
+from . import adpcm, dedup, glossary, providers
 
 
 class NoSpeech(Exception):
@@ -124,6 +123,18 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
     # 领域词表在识别之后统一应用:与具体引擎无关,云端与本地一视同仁。识别器吃不到
     # 人名/术语,只有这张表能纠正它们(见 glossary.py 里为什么不用解码期热词)。
     rules = glossary.load()
+
+    def finish(raw: str) -> tuple[str, str]:
+        """Clean one block. Returns (cleaned, raw).
+
+        Order matters: the glossary first (so a corrected word is a real word
+        before repetition is judged), then disfluency cleanup. The raw text is
+        kept so cleaning is never destructive - a reader can always check what
+        was actually said.
+        """
+        corrected = glossary.apply(raw, rules)
+        return dedup.clean(corrected), raw
+
     spans = []
     if per_segment:
         # Merge the VAD fragments into blocks long enough to carry context. This
@@ -145,10 +156,11 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
                 errors.append({"index": index, "start_ms": start * 1000 // adpcm.SAMPLE_RATE,
                                "error": str(exc)})
                 continue
+            cleaned, raw = finish(transcript.text)
             results.append({"index": index,
                             "start_ms": start * 1000 // adpcm.SAMPLE_RATE,
                             "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
-                            "text": glossary.apply(transcript.text, rules),
+                            "text": cleaned, "raw": raw,
                             "vendor": transcript.vendor, "model": transcript.model,
                             "usage": usage_of(transcript)})
         if not results:
@@ -157,9 +169,10 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
             spans = []
     if not spans:
         transcript = run(samples)
+        cleaned, raw = finish(transcript.text)
         results.append({"index": 0, "start_ms": 0,
                         "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
-                        "text": glossary.apply(transcript.text, rules),
+                        "text": cleaned, "raw": raw,
                         "vendor": transcript.vendor, "model": transcript.model,
                         "usage": usage_of(transcript)})
     # Record the model the provider actually reported, not just the requested
