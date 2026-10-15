@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS "main.c"
          "sb_config.c"
+         "sb_cache.c"
+         "sb_cache_slot.c"
          "sb_diag.c"
          "sb_proto.c"
          "sb_vad.c"

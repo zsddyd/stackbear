@@ -70,12 +70,23 @@ esp_err_t sb_config_init(void)
         nvs_set_str(h, "devid", s_cfg.dev_id);
     }
     s_cfg.provisioned = (s_cfg.ssid[0] != '\0');
+    uint8_t cache_mb = 2;
+    nvs_get_u8(h, "cache_mb", &cache_mb);
+    if (cache_mb < 1 || cache_mb > SB_CACHE_MAX_LIMIT_MB) {
+        cache_mb = 2;
+    }
+    s_cfg.cache_limit_mb = cache_mb;
+    uint8_t cache_on = 0;
+    nvs_get_u8(h, "cache_on", &cache_on);
+    s_cfg.cache_enabled = (cache_on != 0);
     nvs_commit(h);
     nvs_close(h);
     s_ready = true;
     ESP_LOGI(TAG, "配置就绪: dev=%s srv=%s:%u ssid=%s",
              s_cfg.dev_id, s_cfg.srv_host, (unsigned)s_cfg.srv_port,
              s_cfg.ssid[0] ? s_cfg.ssid : "(未配网)");
+    ESP_LOGI(TAG, "离线缓存: %s (上限 %u MB)",
+             s_cfg.cache_enabled ? "开" : "关", (unsigned)s_cfg.cache_limit_mb);
     return ESP_OK;
 }
 
@@ -139,6 +150,29 @@ esp_err_t sb_config_clear_wifi(void)
         s_cfg.ssid[0] = '\0';
         s_cfg.pass[0] = '\0';
         s_cfg.provisioned = false;
+    }
+    return err;
+}
+
+esp_err_t sb_config_set_cache(bool enabled, uint8_t limit_mb)
+{
+    if (limit_mb < 1) {
+        limit_mb = 1;
+    }
+    if (limit_mb > SB_CACHE_MAX_LIMIT_MB) {
+        limit_mb = SB_CACHE_MAX_LIMIT_MB;
+    }
+    nvs_handle_t h = open_ns();
+    if (h == 0) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    ESP_ERROR_CHECK(nvs_set_u8(h, "cache_on", enabled ? 1 : 0));
+    ESP_ERROR_CHECK(nvs_set_u8(h, "cache_mb", limit_mb));
+    esp_err_t err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        s_cfg.cache_enabled = enabled;
+        s_cfg.cache_limit_mb = limit_mb;
     }
     return err;
 }

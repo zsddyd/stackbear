@@ -10,6 +10,12 @@
 #define SB_HOST_MAX   64
 #define SB_DEVID_MAX  16
 
+// 离线音频队列分区(partitions.csv 的 audioq)为 4 MB;可配置上限不超过 3 MB,
+// 留出余量并符合产品约束。
+#define SB_CACHE_PARTITION   "audioq"
+#define SB_CACHE_PART_SIZE   (4u * 1024u * 1024u)
+#define SB_CACHE_MAX_LIMIT_MB 3u
+
 // 出厂默认服务器(可用 Kconfig/编译期覆盖)。云端服务地址在 NVS 里可改。
 #ifndef SB_DEFAULT_SRV_HOST
 #define SB_DEFAULT_SRV_HOST "8.137.56.181"
@@ -25,6 +31,10 @@ typedef struct {
     uint16_t srv_port;
     char     dev_id[SB_DEVID_MAX];
     bool     provisioned;   // 是否已成功配网(有有效凭据)
+    // 离线音频队列(可选):网络不通时把已编码的语音写进 flash,联网后补传。
+    // 默认关闭,避免不做离线缓存时白白消耗 flash 擦写寿命。
+    bool     cache_enabled;
+    uint8_t  cache_limit_mb;   // 1..3,实际可用容量上限
 } sb_config_t;
 
 // 初始化 NVS 命名空间并读入配置;缺失项用默认值补全(默认服务器来自编译期
@@ -42,3 +52,6 @@ esp_err_t sb_config_set_server(const char *host, uint16_t port);
 
 // 清除已保存的 WiFi 凭据(保留设备 id 与服务器地址)。
 esp_err_t sb_config_clear_wifi(void);
+
+// 离线音频队列设置。limit_mb 会被限制在 1..SB_CACHE_MAX_LIMIT_MB。
+esp_err_t sb_config_set_cache(bool enabled, uint8_t limit_mb);

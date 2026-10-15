@@ -15,6 +15,7 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "sb_config.h"
+#include "sb_cache.h"
 #include "sb_diag.h"
 #include "sb_adpcm.h"
 #include "sb_proto.h"
@@ -40,6 +41,34 @@ static volatile bool s_end_requested;
 static volatile uint32_t s_sent;
 static volatile uint32_t s_dropped;
 static uint16_t s_seq;
+
+// 断线时把这块存进离线队列:能存就存(补传时再发),存不下(未启用或已满)则记 dropped。
+static void cache_or_drop(const sb_ul_item_t *item)
+{
+    const esp_err_t err = sb_cache_push(item->data, item->len);
+    if (err != ESP_OK) {
+        s_dropped++;
+    }
+}
+
+// 补传:把离线队列里最早的一条读出来发走,发成功后再出队。返回本次是否发了一条。
+// 只发给同一个连接,失败就保持不动,下次重连继续。
+static bool drain_one_from_cache(int fd)
+{
+    static uint8_t buf[SB_CACHE_SLOT_SIZE];
+    size_t len = 0;
+    bool is_last = false;
+    if (sb_cache_peek(buf, sizeof(buf), &len, &is_last) != ESP_OK) {
+        return false;
+    }
+    if (!send_frame(fd, SB_FRAME_AUDIO, 0, s_seq, buf, (uint16_t)len)) {
+        return false;
+    }
+    s_seq++;
+    s_sent++;
+    (void)sb_cache_commit();
+    return true;
+}
 
 static int connect_to_server(void)
 {
@@ -146,10 +175,18 @@ static void uplink_task(void *arg)
                 continue;
             }
             s_need_hello = false;
+            // 刚连上:先把离线积压按序补传完,再恢复正常实时流,保证顺序。
+            while (s_running && sb_cache_pending() > 0) {
+                if (!drain_one_from_cache(fd)) {
+                    break;   // 连接又坏了,交给外层重连
+                }
+            }
         }
 
         if (xQueueReceive(s_queue, &item, pdMS_TO_TICKS(200)) == pdTRUE) {
             if (!send_frame(fd, SB_FRAME_AUDIO, item.flags, s_seq, item.data, item.len)) {
+                // 发不出去:存进离线队列(启用时),否则只能丢弃。
+                cache_or_drop(&item);
                 close(fd);
                 fd = -1;
                 s_state = SB_UL_ERROR;
@@ -260,6 +297,13 @@ bool sb_uplink_push_audio(const uint8_t *data, size_t len, uint8_t flags)
 {
     if (s_queue == NULL || data == NULL || len == 0 || len > SB_PROTO_MAX_PAYLOAD) {
         return false;
+    }
+    // 队列里有积压说明连接跟不上;此时直接进离线队列,别在内存队列里堆着等丢。
+    // (未启用离线队列时 sb_cache_push 返回错误,照旧计入 dropped。)
+    if (s_state != SB_UL_UP && sb_cache_enabled()) {
+        if (sb_cache_push(data, len) == ESP_OK) {
+            return true;
+        }
     }
     sb_ul_item_t item;
     item.len = (uint16_t)len;

@@ -1,4 +1,10 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x7f0000,
+# App partition is 3.94 MB, far above the ~1.4 MB image, and leaves the upper
+# 4 MB free for the offline audio queue.
+factory,  app,  factory, 0x10000,  0x3f0000,
+# Raw record ring for the optional offline audio queue (no filesystem: fixed
+# 512-byte slots are simpler and avoid a managed component). Accessed through
+# esp_partition; the application decides how much of it to use.
+audioq,   data, spiffs,  0x400000, 0x400000,

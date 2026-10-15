@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "sb_config.h"
+#include "sb_cache.h"
 #include "sb_net.h"
 #include "sb_recorder.h"
 #include "sb_ui.h"
@@ -84,6 +85,26 @@ static void handle_input(const input_event_t *in)
         toggle_recording();
         return;
     }
+    // 设置页有自己的按键语义:UP/DOWN 选容量,OK 开关。放在通用分配之前。
+    if (s_screen == SB_SCREEN_SETTINGS) {
+        if (in->event == BSP_BTN_CLICK && in->btn == BSP_BTN_OK) {
+            if (bsp_lvgl_lock(300)) {
+                sb_ui_settings_toggle();
+                bsp_lvgl_unlock();
+            }
+        } else if (in->event == BSP_BTN_CLICK &&
+                   (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN)) {
+            const int delta = (in->btn == BSP_BTN_UP) ? 1 : -1;
+            if (bsp_lvgl_lock(300)) {
+                sb_ui_settings_move(delta);
+                bsp_lvgl_unlock();
+            }
+        }
+        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
+            ui_show_locked(SB_SCREEN_HOME);   // 长按下键返回主页
+        }
+        return;
+    }
     if (in->event != BSP_BTN_CLICK) {
         return;
     }
@@ -91,7 +112,14 @@ static void handle_input(const input_event_t *in)
         // OK 单击 = 软暂停 / 继续(保持会话不断)。
         sb_recorder_set_paused(!sb_recorder_paused());
     } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        ui_show_locked(s_screen == SB_SCREEN_HOME ? SB_SCREEN_STATS : SB_SCREEN_HOME);
+        // 主页 <-> 状态页;状态页上再按 UP 进设置页。
+        if (s_screen == SB_SCREEN_HOME) {
+            ui_show_locked(SB_SCREEN_STATS);
+        } else if (s_screen == SB_SCREEN_STATS && in->btn == BSP_BTN_UP) {
+            ui_show_locked(SB_SCREEN_SETTINGS);
+        } else {
+            ui_show_locked(SB_SCREEN_HOME);
+        }
     }
 }
 
@@ -197,6 +225,11 @@ void app_main(void)
     ESP_LOGI(TAG, "stackbear 全天候录音卡启动");
     if (sb_config_init() != ESP_OK) {
         ESP_LOGE(TAG, "配置初始化失败");
+    }
+    // 离线队列(可选):启用时挂到 audioq 分区并恢复上电前的积压。失败只告警,
+    // 不影响实时录音上传。
+    if (sb_cache_init() != ESP_OK) {
+        ESP_LOGW(TAG, "离线队列未启用或初始化失败(仅影响离线缓存)");
     }
     bsp_i2c_init();
     // 电量计是软依赖:读不到(CW2017 不应答)只让界面显示 "--%",不阻塞启动。

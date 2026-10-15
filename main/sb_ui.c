@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "sb_config.h"
 #include "sb_net.h"
+#include "sb_cache.h"
 #include "sb_recorder.h"
 #include "sb_uplink.h"
 
@@ -24,6 +25,10 @@
 static lv_obj_t *s_home_scr;
 static lv_obj_t *s_stats_scr;
 static lv_obj_t *s_prov_scr;
+static lv_obj_t *s_set_scr;
+static lv_obj_t *s_set_toggle;
+static lv_obj_t *s_set_sizes[3];
+static lv_obj_t *s_set_status;
 static lv_obj_t *s_home_state;
 static lv_obj_t *s_home_sub;
 static lv_obj_t *s_home_batt;
@@ -32,6 +37,8 @@ static lv_obj_t *s_home_sent;
 static lv_obj_t *s_home_drop;
 static lv_obj_t *s_stats_rows[6];
 static lv_obj_t *s_prov_ap;
+
+static void refresh_settings(void);
 static lv_timer_t *s_timer;
 static char s_ap_name[40] = "";
 
@@ -102,16 +109,60 @@ static void build_home(void)
 static void build_stats(void)
 {
     // Wi-Fi 行同时给出 SSID;地址拆成 DEVICE IP / SERVER IP,不再单列 Server。
-    static const char *names[6] = {"State", "Wi-Fi", "Device IP", "Server IP", "Device", "Seg/Sent"};
+    // 最后两行是离线队列:关着也显示,让人知道有这个功能、当前是什么状态。
+    static const char *names[8] = {"State", "Wi-Fi", "Device IP", "Server IP",
+                                   "Device", "Seg/Sent", "Cache", "Queue"};
     s_stats_scr = base_screen("STATUS");
-    for (int i = 0; i < 6; i++) {
-        lv_obj_t *c = card(s_stats_scr, 12, 40 + i * 44, 216, 38, C_CARD);
+    for (int i = 0; i < 8; i++) {
+        lv_obj_t *c = card(s_stats_scr, 12, 38 + i * 35, 216, 31, C_CARD);
         label(c, names[i], &lv_font_montserrat_14, C_MUTED);
         lv_obj_t *k = lv_obj_get_child(c, 0);
         lv_obj_align(k, LV_ALIGN_LEFT_MID, 12, 0);
         s_stats_rows[i] = label(c, "-", &lv_font_montserrat_14, C_TEXT);
         lv_obj_align(s_stats_rows[i], LV_ALIGN_RIGHT_MID, -12, 0);
     }
+}
+
+// 设置页:离线队列。按 taste 规范,这里不用一堆"卡片+图标+阴影",而是
+// 大字号选中的值 + 一行说明 + 一个明确的开关状态,靠尺度而不是装饰来表达层级。
+static lv_obj_t *s_set_title;
+static lv_obj_t *s_set_cap;
+static lv_obj_t *s_set_usage;
+
+static void build_settings(void)
+{
+    s_set_scr = base_screen("SETTINGS");
+    lv_obj_t *t = label(s_set_scr, "Offline queue", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 12, 40);
+
+    // 主状态:一行大字说清开/关,下面一行小字说明当前用掉多少。
+    lv_obj_t *state = card(s_set_scr, 12, 60, 216, 76, C_CARD);
+    s_set_toggle = label(state, "OFF", &lv_font_montserrat_20, C_MUTED);
+    lv_obj_align(s_set_toggle, LV_ALIGN_TOP_MID, 0, 16);
+    s_set_usage = label(state, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(s_set_usage, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+    // 容量选择:三个值一排,选中的用强调色 + 更亮的底,不做边框/阴影堆叠。
+    lv_obj_t *cap = label(s_set_scr, "Queue size", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 12, 146);
+    static const char *sizes[3] = {"1 MB", "2 MB", "3 MB"};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *b = card(s_set_scr, 12 + i * 74, 166, 68, 44, C_CARD);
+        s_set_sizes[i] = label(b, sizes[i], &lv_font_montserrat_14, C_MUTED);
+        lv_obj_center(s_set_sizes[i]);
+    }
+
+    // 说明文字写全(规范要求:信息写全,而不是靠图标暗示)。
+    lv_obj_t *hint = label(s_set_scr,
+                           "Keeps audio in flash when the\n"
+                           "network is down, then uploads\n"
+                           "it. When full, old audio stays\n"
+                           "and new audio is dropped.",
+                           &lv_font_montserrat_14, C_MUTED);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, 216);
+    lv_obj_set_style_text_line_space(hint, 2, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 12, -14);
 }
 
 static void build_provision(void)
@@ -214,13 +265,25 @@ static void refresh(lv_timer_t *t)
                               (unsigned long)sb_recorder_segments(),
                               (unsigned long)sb_uplink_frames_sent(),
                               (unsigned long)sb_uplink_frames_dropped());
+        const sb_config_t *c = sb_config_get();
+        // 队列关着时明确写 off,而不是留空或显示 0,避免被误解成"开了但没数据"。
+        lv_label_set_text(s_stats_rows[6], c->cache_enabled ? "on" : "off");
+        if (c->cache_enabled) {
+            lv_label_set_text_fmt(s_stats_rows[7], "%u KB / %u MB",
+                                  (unsigned)(sb_cache_used_bytes() / 1024u),
+                                  (unsigned)c->cache_limit_mb);
+        } else {
+            lv_label_set_text(s_stats_rows[7], "-");
+        }
     }
+    refresh_settings();
 }
 
 void sb_ui_init(void)
 {
     build_home();
     build_stats();
+    build_settings();
     build_provision();
     s_timer = lv_timer_create(refresh, 500, NULL);
     lv_screen_load(s_home_scr);
@@ -230,8 +293,71 @@ void sb_ui_show(sb_screen_t screen)
 {
     switch (screen) {
     case SB_SCREEN_STATS: lv_screen_load(s_stats_scr); break;
+    case SB_SCREEN_SETTINGS: lv_screen_load(s_set_scr); break;
     case SB_SCREEN_PROVISION: lv_screen_load(s_prov_scr); break;
     default: lv_screen_load(s_home_scr); break;
+    }
+}
+
+// --- 设置页交互(由 main 的按键处理调用;都在 LVGL 上下文或持锁时调用) -------
+
+void sb_ui_settings_move(int delta)
+{
+    const sb_config_t *cfg = sb_config_get();
+    // 关着的时候上下键直接开(并落到默认 2MB),省一步操作。
+    if (!cfg->cache_enabled) {
+        sb_config_set_cache(true, cfg->cache_limit_mb);
+        return;
+    }
+    int mb = (int)cfg->cache_limit_mb + delta;
+    if (mb < 1) {
+        mb = 1;
+    }
+    if (mb > (int)SB_CACHE_MAX_LIMIT_MB) {
+        mb = (int)SB_CACHE_MAX_LIMIT_MB;
+    }
+    if ((uint8_t)mb != cfg->cache_limit_mb) {
+        sb_config_set_cache(true, (uint8_t)mb);
+    }
+}
+
+void sb_ui_settings_toggle(void)
+{
+    const sb_config_t *cfg = sb_config_get();
+    sb_config_set_cache(!cfg->cache_enabled, cfg->cache_limit_mb);
+}
+
+static void refresh_settings(void)
+{
+    if (s_set_scr == NULL) {
+        return;
+    }
+    const sb_config_t *cfg = sb_config_get();
+    const bool on = cfg->cache_enabled;
+    if (s_set_toggle) {
+        lv_label_set_text(s_set_toggle, on ? "ON" : "OFF");
+        lv_obj_set_style_text_color(s_set_toggle, lv_color_hex(on ? C_OK : C_MUTED), 0);
+    }
+    if (s_set_usage) {
+        if (on) {
+            // 用掉多少 / 队列里还有多少条待补传 —— 让"存满丢弃"的行为可预期。
+            lv_label_set_text_fmt(s_set_usage, "%u KB used   %u waiting   %u dropped",
+                                  (unsigned)(sb_cache_used_bytes() / 1024u),
+                                  (unsigned)sb_cache_pending(),
+                                  (unsigned)sb_cache_dropped());
+        } else {
+            lv_label_set_text(s_set_usage, "disabled - audio is not buffered");
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        if (s_set_sizes[i] == NULL) {
+            continue;
+        }
+        const bool selected = on && ((int)cfg->cache_limit_mb == i + 1);
+        lv_obj_set_style_text_color(s_set_sizes[i],
+                                    lv_color_hex(selected ? C_ACCENT : C_MUTED), 0);
+        lv_obj_set_style_bg_color(lv_obj_get_parent(s_set_sizes[i]),
+                                  lv_color_hex(selected ? 0x24303F : C_CARD), 0);
     }
 }
 
