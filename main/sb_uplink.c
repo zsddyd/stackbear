@@ -42,6 +42,9 @@ static volatile uint32_t s_sent;
 static volatile uint32_t s_dropped;
 static uint16_t s_seq;
 
+static bool send_frame(int fd, uint8_t type, uint8_t flags, uint16_t seq,
+                       const uint8_t *payload, uint16_t len);
+
 // 断线时把这块存进离线队列:能存就存(补传时再发),存不下(未启用或已满)则记 dropped。
 static void cache_or_drop(const sb_ul_item_t *item)
 {
