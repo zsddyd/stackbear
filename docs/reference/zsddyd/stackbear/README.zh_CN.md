@@ -165,6 +165,28 @@ STACKBEAR_ASR_LANGUAGE=zh
 - **要指定语言**。开启自动检测时,开头两个安静块在一段中文对话里被识别成英文
   ("B."、"After.");`STACKBEAR_ASR_LANGUAGE=zh` 消除了这个问题。
 
+### 领域词表(提示词做不到的那部分)
+
+最直觉的想法 —— 给识别器一个"更好的提示词" —— 在这里不成立。SenseVoice 是端到端
+模型,没有提示词接口;它的热词能力(sherpa-onnx 的
+`hr_dict_dir`/`hr_lexicon`/`hr_rule_fsts`)是基于**通用拼音表**的同音替换。我把官方
+热词文件下载下来在真实录音上做了对照,结果几乎没变化 —— 那张表不可能包含一个团队的
+专有名词。
+
+真正有效的是识别**之后**应用的领域词表(`cloud/glossary.txt` +
+`cloud/src/stackbear/glossary.py`),它与引擎无关,因此云端模型同样受益:
+
+```text
+# 一行一条,长词优先
+应哥 => 运哥
+一哥 => 运哥
+LE   => C798-ASE
+```
+
+替换结果不会被再次扫描(规则不会意外串联);纯 ASCII 的错形会自动加词边界 ——
+`LE => C798-ASE` 会改写含该代号的句子,但不会动 `LEVEL` 和 `file-led`。在那段暴露出
+问题的 39 秒录音上实测:同一位同事被识别成的三个名字合并成了一个,型号也正确了。
+
 OpenCode Go 订阅按 models.dev 注册表确实包含支持音频输入的模型:`mimo-v2.6-flash`、
 `mimo-v2.6-pro`、`mimo-v2.5`、`gemini-4-argon-contributor`、
 `muse-spark-1.2/1.3-contributor`。注意其文档写明面向编码代理流量,当作实验路径而非

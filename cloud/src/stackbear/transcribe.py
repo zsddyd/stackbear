@@ -24,6 +24,7 @@ import sys
 import wave
 
 from . import adpcm, providers
+from . import glossary
 
 
 class NoSpeech(Exception):
@@ -120,6 +121,9 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
 
     results: list[dict] = []
     errors: list[dict] = []
+    # 领域词表在识别之后统一应用:与具体引擎无关,云端与本地一视同仁。识别器吃不到
+    # 人名/术语,只有这张表能纠正它们(见 glossary.py 里为什么不用解码期热词)。
+    rules = glossary.load()
     spans = []
     if per_segment:
         # Merge the VAD fragments into blocks long enough to carry context. This
@@ -144,7 +148,7 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
             results.append({"index": index,
                             "start_ms": start * 1000 // adpcm.SAMPLE_RATE,
                             "end_ms": end * 1000 // adpcm.SAMPLE_RATE,
-                            "text": transcript.text,
+                            "text": glossary.apply(transcript.text, rules),
                             "vendor": transcript.vendor, "model": transcript.model,
                             "usage": usage_of(transcript)})
         if not results:
@@ -155,7 +159,7 @@ def transcribe_session(session: pathlib.Path, *, config: providers.AsrConfig | N
         transcript = run(samples)
         results.append({"index": 0, "start_ms": 0,
                         "end_ms": len(samples) * 1000 // adpcm.SAMPLE_RATE,
-                        "text": transcript.text,
+                        "text": glossary.apply(transcript.text, rules),
                         "vendor": transcript.vendor, "model": transcript.model,
                         "usage": usage_of(transcript)})
     # Record the model the provider actually reported, not just the requested

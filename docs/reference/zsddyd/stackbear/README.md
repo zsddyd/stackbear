@@ -200,6 +200,33 @@ transcribes in about 9 s at ~250-400 MB RSS. Two findings from measuring it:
   back as English ("B.", "After.") inside an otherwise Chinese conversation;
   `STACKBEAR_ASR_LANGUAGE=zh` removes that.
 
+### Domain vocabulary (the part a prompt cannot do)
+
+The obvious idea - give the recogniser a better prompt - does not apply here.
+SenseVoice is an end-to-end model with no prompt interface, and its hotword
+support (sherpa-onnx `hr_dict_dir`/`hr_lexicon`/`hr_rule_fsts`) is a homophone
+replacer built from a *general* pinyin table: fetched and measured on a real
+recording, it changed nothing, because that table cannot contain one team's
+proper nouns.
+
+What works is a glossary applied after recognition (`cloud/glossary.txt`,
+`cloud/src/stackbear/glossary.py`), which is engine-independent and therefore
+also corrects the cloud providers:
+
+```text
+# one rule per line, longest wrong-form first
+<misheard> => <correct>
+<variant>  => <correct>
+LE         => C798-ASE
+```
+
+A replacement is never rescanned (so rules cannot chain unexpectedly), and an
+all-ASCII wrong-form gets ASCII word boundaries - `LE => C798-ASE` rewrites
+a Chinese sentence containing the bare code but leaves `LEVEL` and `file-led`
+untouched. Measured effect on the 39 s recording that exposed it: a colleague
+heard as three different names collapsed into one, and the model code came out
+correctly.
+
 The OpenCode Go subscription reaches audio-capable models per the models.dev
 registry: `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`,
 `gemini-4-argon-contributor`, `muse-spark-1.2/1.3-contributor`. Note the vendor

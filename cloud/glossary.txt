@@ -1,0 +1,32 @@
+# ASR glossary: "wrong => right", applied to every transcript after recognition.
+#
+# A recogniser trained on general speech mishears the words one person actually
+# uses: colleague names, product names, internal jargon. Add them here and they
+# are corrected in every transcript, whichever engine produced it. Rules are
+# applied longest-first and a replacement is never rescanned, so a short rule
+# cannot damage a longer match. The file is read per transcription.
+#
+# Format: one rule per line, "wrong => right". Lines starting with # are ignored.
+# An all-ASCII wrong-form needs ASCII word boundaries, so a product code cannot
+# corrupt a longer Latin word (LE matches "对LE的" but not "LEVEL").
+#
+# --- 同事姓名 ---
+# 同一位同事被识别出多种写法,统一到"运哥"。
+运哥 => 运哥
+应哥 => 运哥
+一哥 => 运哥
+云哥 => 运哥
+运歌 => 运哥
+应歌 => 运哥
+一歌 => 运哥
+
+# --- 产品/型号代号 ---
+# LE 是 C798-ASE 的缩写(纯 ASCII,自动加词边界,不会误伤 LEVEL / file-led)。
+LE => C798-ASE
+
+# --- 行业术语 ---
+同轴县 => 同轴线
+同轴显 => 同轴线
+同轴现 => 同轴线
+
+# --- 继续在此追加 ---
