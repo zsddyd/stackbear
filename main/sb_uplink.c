@@ -22,15 +22,26 @@
 
 static const char *TAG = "sb_uplink";
 
-#define SB_UL_QUEUE_LEN   24                 // 24 x 60ms ≈ 1.4s 缓冲
+// 队列深度按"约 1 秒音频"取:16 x 60ms ≈ 0.96s。之前是 24,但每项按协议上限
+// (1400B)开,24 项就是 32.9 KB 常驻内存 —— 在 OTA 下载(WiFi 收包突发需要额外
+// buffer)时就撞上 OOM 崩了。这里同时把项大小改成实际音频帧长,见 sb_ul_item_t。
+#define SB_UL_QUEUE_LEN   16
 #define SB_UL_TASK_STACK  4096
 #define SB_UL_CONNECT_WAIT_MS 1500
 
 typedef struct {
     uint16_t len;
     uint8_t  flags;
-    uint8_t  data[SB_PROTO_MAX_PAYLOAD];
+    // 只需容纳一次编码出的音频帧(ADPCM 块 484B)。之前按协议上限 1400B 开,
+    // 每项浪费约 900B,16 项就是 14KB 的无谓占用 —— 无 PSRAM 的板子上很致命。
+    uint8_t  data[SB_ADPCM_BLOCK_BYTES];
 } sb_ul_item_t;
+
+// 队列项装得下最长的一帧;协议上限更高,但音频路径只用到 ADPCM 块。
+_Static_assert(SB_ADPCM_BLOCK_BYTES <= SB_PROTO_MAX_PAYLOAD,
+               "audio frame must fit the protocol payload limit");
+_Static_assert(SB_ADPCM_BLOCK_BYTES <= SB_CACHE_SLOT_SIZE,
+               "audio frame must fit an offline cache slot");
 
 static QueueHandle_t s_queue;
 static TaskHandle_t s_task;
@@ -265,6 +276,11 @@ void sb_uplink_stop(void)
     }
 }
 
+bool sb_uplink_running(void)
+{
+    return s_running;
+}
+
 sb_uplink_state_t sb_uplink_state(void)
 {
     return s_state;
@@ -298,7 +314,9 @@ void sb_uplink_end_session(void)
 
 bool sb_uplink_push_audio(const uint8_t *data, size_t len, uint8_t flags)
 {
-    if (s_queue == NULL || data == NULL || len == 0 || len > SB_PROTO_MAX_PAYLOAD) {
+    // 队列项只按音频帧大小开,超长的帧(协议允许的更大 payload)不能塞进来,
+    // 否则 memcpy 会越界。音频路径只会传 ADPCM 块。
+    if (s_queue == NULL || data == NULL || len == 0 || len > SB_ADPCM_BLOCK_BYTES) {
         return false;
     }
     // 队列里有积压说明连接跟不上;此时直接进离线队列,别在内存队列里堆着等丢。

@@ -16,6 +16,7 @@ typedef enum {
 // 创建队列与上传任务。真正的连接在任务里异步建立,本函数不阻塞。
 esp_err_t sb_uplink_start(void);
 void sb_uplink_stop(void);
+bool sb_uplink_running(void);
 
 sb_uplink_state_t sb_uplink_state(void);
 uint32_t sb_uplink_frames_sent(void);

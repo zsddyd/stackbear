@@ -22,8 +22,11 @@
 
 static const char *TAG = "sb_ota";
 
+// 下载缓冲从 4KB 收到 2KB:这个板子没有 PSRAM,而下载时 WiFi 本身还要为接收
+// 突发分配 buffer。4KB 缓冲叠加 WiFi 的临时分配曾直接把堆耗尽(串口看到
+// "wifi:alloc eb ... fail" 后崩溃)。2KB 对 ~1.4MB 的镜像只是多几十次 recv。
 #define OTA_TASK_STACK 8192
-#define OTA_CHUNK      4096
+#define OTA_CHUNK      2048
 
 static volatile sb_ota_state_t s_state = SB_OTA_IDLE;
 static char s_msg[96];
@@ -187,7 +190,6 @@ static esp_err_t download_and_flash(const sb_config_t *cfg, const char *url,
     }
     esp_err_t err = ESP_FAIL;
     esp_ota_handle_t handle = 0;
-    uint8_t *chunk = NULL;
     uint8_t digest[32] = {0};
     mbedtls_sha256_context sha;
     static char hdr[1024];
@@ -206,11 +208,8 @@ static esp_err_t download_and_flash(const sb_config_t *cfg, const char *url,
         set_msg("ota begin failed");
         goto done;
     }
-    chunk = malloc(OTA_CHUNK);
-    if (chunk == NULL) {
-        set_msg("no memory");
-        goto done;
-    }
+    // 固定用静态缓冲:避免下载时和 WiFi 抢同一时刻的堆,也不需要 malloc 失败路径。
+    static uint8_t chunk[OTA_CHUNK];
     mbedtls_sha256_init(&sha);
     mbedtls_sha256_starts(&sha, 0);
     size_t total = 0;
@@ -271,7 +270,6 @@ static esp_err_t download_and_flash(const sb_config_t *cfg, const char *url,
     err = ESP_OK;
 
 done:
-    free(chunk);
     if (handle) {
         esp_ota_abort(handle);
     }
@@ -308,7 +306,12 @@ static void ota_task(void *arg)
     // 升级会重启:先把录音与会话优雅停下,别把正在写的会话弄断。
     sb_recorder_set_paused(true);
     sb_uplink_end_session();
-    vTaskDelay(pdMS_TO_TICKS(600));
+    // 再把上行任务整个停掉,把它占用的 socket 缓冲和队列还给 WiFi —— 下载时
+    // WiFi 要为接收突发额外分配 buffer,不释放这些曾把堆耗尽(见 sb_uplink.c 里
+    // 队列项的注释)。升级失败后会重新启动上行。
+    vTaskDelay(pdMS_TO_TICKS(500));
+    sb_uplink_stop();
+    vTaskDelay(pdMS_TO_TICKS(300));
 
     s_state = SB_OTA_DOWNLOADING;
     if (download_and_flash(cfg, url, sha) == ESP_OK) {
@@ -318,6 +321,8 @@ static void ota_task(void *arg)
     }
     // 失败:恢复录音,继续跑原固件。
     s_state = SB_OTA_FAILED;
+    sb_uplink_start();
+    sb_uplink_begin_session();
     sb_recorder_set_paused(false);
     ESP_LOGE(TAG, "升级失败: %s", s_msg);
     vTaskDelete(NULL);

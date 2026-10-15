@@ -243,8 +243,10 @@ static void app_task(void *arg)
             sb_recorder_start();
             vTaskDelay(pdMS_TO_TICKS(200));
         }
-        // 上行任务只启动一次:它自己负责 TCP 连接与重连,WiFi 通了就会发 HELLO。
-        if (!s_uplink_started) {
+        // 上行任务由应用循环看护:它自己负责 TCP 连接与重连,WiFi 通了就发 HELLO。
+        // 这里每次循环都确认它在跑 —— OTA 下载前会临时停掉它以腾出内存,升级失败
+        // 后需要重新拉起。全部函数都是幂等的。
+        if (!sb_uplink_running()) {
             sb_uplink_start();
             sb_uplink_begin_session();
             s_uplink_started = true;
