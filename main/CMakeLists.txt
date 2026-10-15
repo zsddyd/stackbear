@@ -4,6 +4,7 @@ idf_component_register(
          "sb_cache.c"
          "sb_cache_slot.c"
          "sb_json.c"
+         "sb_nav.c"
          "sb_version.c"
          "sb_ota.c"
          "sb_diag.c"

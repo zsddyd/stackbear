@@ -1,4 +1,17 @@
-// main/sb_ui.h —— 重新设计的应用界面(全英文)。不复用基线 demo 菜单/像素主题。
+// main/sb_ui.h —— 应用界面(全英文)。不复用基线 demo 菜单/像素主题。
+//
+// 页面层级(两层,任何页面长按 DOWN 逐级返回,长按 OK 全局进配网):
+//
+//   HOME            大状态卡(聚合结论)+ SEG/SENT/DROP
+//    └ STATUS       分组菜单,每行右侧带一行摘要
+//        ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+//        ├ RECORDER  Recording / Segments / Sent / Dropped
+//        ├ DEVICE    Device ID / Firmware / Slot / Commit / Built / Check for update
+//        └ STORAGE   Cache / Size / Used / Pending / Dropped + 说明
+//
+// 设计取舍:HOME 独占那个"聚合状态"(它融合了凭据/链路/暂停/上行四层判断),
+// 子页只讲自己那一层,避免同一结论在多处重复;NETWORK 里 Wi-Fi 与 Uplink 分列,
+// 因为"WiFi 通"不等于"能上传"。
 #pragma once
 
 #include "lvgl.h"
@@ -6,30 +19,29 @@
 
 typedef enum {
     SB_SCREEN_HOME = 0,
-    SB_SCREEN_STATS,
-    SB_SCREEN_SETTINGS,
-    SB_SCREEN_VERSION,
+    SB_SCREEN_MENU,
+    SB_SCREEN_NET,
+    SB_SCREEN_REC,
+    SB_SCREEN_DEV,
+    SB_SCREEN_STORAGE,
     SB_SCREEN_PROVISION,
 } sb_screen_t;
 
-// 在当前 LVGL 任务/已持锁上下文里创建界面并显示首页。
+// 在 LVGL 任务/已持锁上下文里创建界面并显示首页。
 void sb_ui_init(void);
 
 // 切换页面(需在 LVGL 上下文或持 bsp_lvgl_lock 时调用)。
 void sb_ui_show(sb_screen_t screen);
+sb_screen_t sb_ui_current(void);
 
 // 设置配网页展示的热点名(进入配网模式时调用)。
 void sb_ui_set_ap_name(const char *name);
 
-// 设置页交互(需在 LVGL 上下文或持 bsp_lvgl_lock 时调用)。
-// move: 在 1..SB_CACHE_MAX_LIMIT_MB 之间调整容量;toggle: 开关离线队列。
-void sb_ui_settings_move(int delta);
-void sb_ui_settings_toggle(void);
+// 列表页导航。由 main 的按键处理转发,光标与页面状态由本模块自己维护,
+// 上层不需要知道"第几行是哪一项"。
+void sb_ui_move(int delta);     // UP/DOWN 单击
+void sb_ui_activate(void);      // OK 单击:进子页 / 切换 / 触发
+void sb_ui_back(void);          // 长按 DOWN:返回上一级
 
-// 版本页交互:在 "Check for update" 上按 OK 触发检查。
-void sb_ui_version_check(void);
-
-// 状态页光标:移动 / 读取所在行 / Version 行的序号。
-void sb_ui_stats_move(int delta);
-int sb_ui_stats_cursor(void);
-int sb_ui_stats_version_row(void);
+// 当前行是否有动作(供界面提示与按键判断;无动作的行 OK 不响应)。
+bool sb_ui_row_actionable(void);

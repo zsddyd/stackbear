@@ -21,6 +21,14 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass);
 // 用指数退避在后台完成。
 esp_err_t sb_net_ensure_connected(void);
 
+// 从已保存的配置载入 WiFi 凭据,之后 sb_net_ensure_connected() 才能工作。
+// 必须在 sb_net_init() 之后、进入应用循环之前调用一次。
+//
+// 之前遗漏了这一步:ensure_connected() 只看内存里的 s_ssid,而 s_ssid 只在
+// 主动调用 sb_net_sta_connect() 时才被赋值。结果每次重启后设备都不会使用 NVS
+// 里已保存的凭据,看起来就像"又要重新配网"。
+esp_err_t sb_net_load_saved(void);
+
 // 是否正在后台等待重连(退避计时中)。用于界面/日志区分"闲置"与"重连中"。
 bool sb_net_reconnecting(void);
 

@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
+#include "sb_config.h"
 
 #define STA_CONNECT_BIT BIT0
 #define STA_FAIL_BIT    BIT1
@@ -249,6 +250,25 @@ esp_err_t sb_net_sta_connect(const char *ssid, const char *pass)
         schedule_reconnect();
     }
     return ESP_FAIL;
+}
+
+// 从已保存的配置(NVS)载入 WiFi 凭据。必须在 sb_net_init() 之后、进入应用循环
+// 之前调用一次。
+//
+// 为什么需要它:ensure_connected() 只看内存里的 s_ssid,而 s_ssid 只在主动调用
+// sb_net_sta_connect() 时才会被赋值。之前 app_task 改成周期性调用
+// ensure_connected() 后,开机根本没人把 NVS 里的凭据填进 s_ssid,于是设备每次
+// 重启都不会自动连网,看起来就像"升级/重启后还要重新配网"。
+esp_err_t sb_net_load_saved(void)
+{
+    const sb_config_t *cfg = sb_config_get();
+    if (cfg == NULL || cfg->ssid[0] == '\0') {
+        return ESP_ERR_NOT_FOUND;   // 还没配过网
+    }
+    strlcpy(s_ssid, cfg->ssid, sizeof(s_ssid));
+    strlcpy(s_pass, cfg->pass, sizeof(s_pass));
+    ESP_LOGI(TAG, "已载入保存的凭据: '%s'", s_ssid);
+    return ESP_OK;
 }
 
 esp_err_t sb_net_ensure_connected(void)

@@ -86,67 +86,33 @@ static void handle_input(const input_event_t *in)
         toggle_recording();
         return;
     }
-    // 设置页有自己的按键语义:UP/DOWN 选容量,OK 开关。放在通用分配之前。
-    if (s_screen == SB_SCREEN_SETTINGS) {
-        if (in->event == BSP_BTN_CLICK && in->btn == BSP_BTN_OK) {
-            if (bsp_lvgl_lock(300)) {
-                sb_ui_settings_toggle();
-                bsp_lvgl_unlock();
-            }
-        } else if (in->event == BSP_BTN_CLICK &&
-                   (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN)) {
-            const int delta = (in->btn == BSP_BTN_UP) ? 1 : -1;
-            if (bsp_lvgl_lock(300)) {
-                sb_ui_settings_move(delta);
-                bsp_lvgl_unlock();
-            }
-        }
-        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
-            ui_show_locked(SB_SCREEN_HOME);   // 长按下键返回主页
+    // 长按下键 = 逐级返回(子页 -> 分组菜单 -> 主页)。
+    if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
+        if (bsp_lvgl_lock(300)) {
+            sb_ui_back();
+            bsp_lvgl_unlock();
         }
         return;
     }
-    // 版本详情页:OK 触发检查更新,长按 DOWN 返回状态页。
-    if (s_screen == SB_SCREEN_VERSION) {
-        if (in->event == BSP_BTN_CLICK && in->btn == BSP_BTN_OK) {
-            if (bsp_lvgl_lock(300)) {
-                sb_ui_version_check();
-                bsp_lvgl_unlock();
-            }
-        } else if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
-            ui_show_locked(SB_SCREEN_STATS);
-        }
-        return;
-    }
-    // 状态页:UP/DOWN 在行间移动光标,OK 进入该行对应的下一级页面。
-    if (s_screen == SB_SCREEN_STATS) {
-        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_UP) {
-            ui_show_locked(SB_SCREEN_SETTINGS);   // 长按上键进设置
-            return;
-        }
-        if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
-            ui_show_locked(SB_SCREEN_HOME);
-            return;
-        }
+    // 列表页(分组菜单与四个子页)统一语义:UP/DOWN 移动光标,OK 激活当前行。
+    // 每一行是不是可操作由 UI 自己判断(见 sb_ui_row_actionable),这样上层不必
+    // 知道"第几行是哪一项"。
+    const sb_screen_t screen = s_screen;
+    if (screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET || screen == SB_SCREEN_REC ||
+        screen == SB_SCREEN_DEV || screen == SB_SCREEN_STORAGE) {
         if (in->event != BSP_BTN_CLICK) {
             return;
         }
         if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
             const int delta = (in->btn == BSP_BTN_DOWN) ? 1 : -1;
             if (bsp_lvgl_lock(300)) {
-                sb_ui_stats_move(delta);
+                sb_ui_move(delta);
                 bsp_lvgl_unlock();
             }
         } else if (in->btn == BSP_BTN_OK) {
-            int cursor = 0;
-            int version_row = 0;
             if (bsp_lvgl_lock(300)) {
-                cursor = sb_ui_stats_cursor();
-                version_row = sb_ui_stats_version_row();
+                sb_ui_activate();
                 bsp_lvgl_unlock();
-            }
-            if (cursor == version_row) {
-                ui_show_locked(SB_SCREEN_VERSION);
             }
         }
         return;
@@ -158,8 +124,8 @@ static void handle_input(const input_event_t *in)
         // OK 单击 = 软暂停 / 继续(保持会话不断)。
         sb_recorder_set_paused(!sb_recorder_paused());
     } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        // 主页上按上/下进入状态页(状态页自身的语义在上面单独处理)。
-        ui_show_locked(SB_SCREEN_STATS);
+        // 主页上按上/下进入分组菜单(菜单与子页的语义在上面统一处理)。
+        ui_show_locked(SB_SCREEN_MENU);
     }
 }
 
@@ -218,6 +184,12 @@ static void app_task(void *arg)
         ESP_LOGE(TAG, "网络初始化失败");
         vTaskDelete(NULL);
         return;
+    }
+    // 把 NVS 里保存的凭据载入网络模块,之后 ensure_connected() 才能自动连接。
+    // 少了这一步,重启后设备手里没有任何凭据,只能显示未配网 —— 而被误以为是
+    // "又要重新配网"。
+    if (sb_net_load_saved() != ESP_OK) {
+        ESP_LOGI(TAG, "尚无已保存的 WiFi 凭据,等待配网");
     }
     for (;;) {
         // 配网页里连接成功 -> 关闭 SoftAP/网页,回到主页继续正常流程。
