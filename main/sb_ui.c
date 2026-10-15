@@ -53,6 +53,8 @@ static lv_obj_t *s_prov_ap;
 
 static void refresh_settings(void);
 static void build_version(void);
+static void refresh_stats_cursor(void);
+static void refresh_version(void);
 static lv_timer_t *s_timer;
 static char s_ap_name[40] = "";
 
