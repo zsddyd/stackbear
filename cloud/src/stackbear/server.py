@@ -28,6 +28,7 @@ import re
 import struct
 import time
 import uuid
+from urllib.parse import unquote_plus
 
 from . import __version__, protocol
 
@@ -56,6 +57,23 @@ _SAFE = re.compile(r"[^0-9A-Za-z_.-]")
 def _safe_component(value: str, default: str) -> str:
     cleaned = _SAFE.sub("", value or "")
     return cleaned[:64] or default
+
+
+def _decode_query(query: str) -> str:
+    """Restore a query string to text.
+
+    The request line is decoded as latin1 (correct for HTTP headers), so any
+    byte above 0x7F - e.g. the UTF-8 bytes of a Chinese search word - arrives as
+    a latin1 character. Re-encode to bytes, decode as UTF-8, then apply
+    percent-decoding. Without this a search for a non-ASCII word never matches.
+    """
+    if not query:
+        return query
+    try:
+        raw = query.encode("latin1", "replace")
+        return unquote_plus(raw.decode("utf-8", "replace"))
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return query
 
 
 def log(message: str) -> None:
@@ -235,7 +253,11 @@ async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asy
         parts = request_line.split()
         method = parts[0] if parts else ""
         target = parts[1] if len(parts) > 1 else "/"
+        # 查询值里的非 ASCII(搜索用的中文词)在线上是百分号编码的 UTF-8 字节。
+        # 整行按 latin1 解码是 HTTP 头的正确做法,但那样查询值会变成乱码字符,
+        # 直接拿去找子串永远匹配不上 —— 必须先按 UTF-8 还原、再做百分号解码。
         path, _, query = target.partition("?")
+        query = _decode_query(query)
 
         if method in ("GET", "HEAD") and path in ("/", "/health"):
             payload = {
@@ -259,6 +281,39 @@ async def _handle_http(initial: bytes, reader: asyncio.StreamReader, writer: asy
             # OTA: the manifest and the image the device installs.
             body, status, ctype = _serve_firmware(path)
             writer.write(_http_response(body, status, ctype))
+        elif method in ("GET", "HEAD") and path == "/transcripts":
+            # 统一入口:列出所有会话及其转写状态,新的在前。
+            #   /transcripts?dev=<设备>&limit=<n>&q=<关键词>
+            # q 存在时按内容搜索(返回命中的行),否则返回索引摘要。
+            params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+            dev = params.get("dev", "")
+            try:
+                limit = int(params.get("limit", "0"))
+            except ValueError:
+                limit = 0
+            needle = params.get("q", "")
+            if needle:
+                rows = search_transcripts(needle, limit or 50)
+            else:
+                rows = list_sessions(dev, limit)
+            payload = {"count": len(rows), "sessions": rows}
+            writer.write(_http_response(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")))
+        elif method in ("GET", "HEAD") and path.startswith("/transcript/"):
+            # 单个会话的全文:/transcript/<设备>/<会话>
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 3:
+                dev = _safe_component(parts[1], "")
+                sess = _safe_component(parts[2], "")
+                session = DATA / dev / sess
+                text_path = session / "transcript.txt"
+                if dev and sess and text_path.is_file():
+                    writer.write(_http_response(text_path.read_bytes(),
+                                                "200 OK", "text/plain; charset=utf-8"))
+                else:
+                    writer.write(_http_response(b'{"error":"not found"}', "404 Not Found"))
+            else:
+                writer.write(_http_response(b'{"error":"bad path"}', "400 Bad Request"))
         elif method == "POST" and path == "/upload":
             # 兼容早期 M1 心跳自测:POST /upload?dev=&seq=
             params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
@@ -460,6 +515,103 @@ def find_orphaned_sessions(limit: int = 0) -> list[pathlib.Path]:
         found.append(session)
     found.sort(key=lambda p: p.stat().st_mtime)
     return found[:limit] if limit > 0 else found
+
+
+def list_sessions(device: str = "", limit: int = 0) -> list[dict]:
+    """Enumerate sessions with their transcription state, newest first.
+
+    This is the single entry point into the recordings: instead of walking
+    `data/` by hand, a caller asks for the index and gets one row per session
+    with the device, time, duration, transcript availability and a text preview.
+    """
+    rows: list[dict] = []
+    if not DATA.is_dir():
+        return rows
+    pattern = f"{_safe_component(device, '*')}/*" if device else "*/*"
+    for session in DATA.glob(pattern):
+        if not session.is_dir():
+            continue
+        audio = session / "audio.adpcm"
+        row: dict = {
+            "device": session.parent.name,
+            "session": session.name,
+            "path": str(session),
+        }
+        try:
+            row["mtime"] = session.stat().st_mtime
+        except OSError:
+            continue
+        meta_path = session / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                row["audio_ms"] = meta.get("audio_ms", 0)
+                row["segments"] = meta.get("seg_count", 0)
+                row["started_at"] = meta.get("started_at")
+            except (OSError, json.JSONDecodeError):
+                pass
+        if audio.is_file():
+            row["audio_bytes"] = audio.stat().st_size
+        text_path = session / "transcript.txt"
+        status_path = session / "transcript.status.json"
+        if text_path.is_file():
+            row["transcribed"] = True
+            try:
+                text = text_path.read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            row["chars"] = len(text.strip())
+            row["preview"] = text.strip().splitlines()[0][:80] if text.strip() else ""
+        else:
+            row["transcribed"] = False
+        if status_path.is_file():
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                row["model"] = status.get("model")
+                row["skipped"] = status.get("skipped")
+                row["dropped"] = status.get("dropped", 0)
+            except (OSError, json.JSONDecodeError):
+                pass
+        rows.append(row)
+    rows.sort(key=lambda r: r.get("mtime", 0), reverse=True)
+    return rows[:limit] if limit > 0 else rows
+
+
+def search_transcripts(query: str, limit: int = 50) -> list[dict]:
+    """Find sessions whose transcript contains `query` (case-insensitive).
+
+    Scans the transcripts that exist rather than building an index that could
+    drift out of sync with the files. `limit` bounds the number of *matches*, not
+    how much is scanned - bounding the scan instead would silently miss a match
+    that happens to sort later (an early version returned no hit for a word that
+    was present, because the matching session was below the scan cutoff).
+    """
+    needle = query.strip().lower()
+    if not needle:
+        return []
+    hits: list[dict] = []
+    if not DATA.is_dir():
+        return hits
+    # 只看真正有转写结果的会话:直接扫文件,比先构造全量索引更省。
+    for text_path in DATA.glob("*/*/transcript.txt"):
+        session = text_path.parent
+        try:
+            text = text_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if needle in text.lower():
+            lines = [ln for ln in text.splitlines() if needle in ln.lower()]
+            hits.append({
+                "device": session.parent.name,
+                "session": session.name,
+                "path": str(session),
+                "transcribed": True,
+                "matches": lines[:5],
+            })
+            if len(hits) >= limit:
+                break
+    hits.sort(key=lambda r: r["session"], reverse=True)
+    return hits
 
 
 def requeue_orphaned_sessions(limit: int = 50) -> int:
