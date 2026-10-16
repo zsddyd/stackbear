@@ -87,12 +87,18 @@ static lv_obj_t *base_screen(const char *title)
 //   3. 名称/数值标签——最后创建且父对象是屏幕,因此画在高亮之上
 //
 // 标签不能放在行底色里当子对象:那样它们会先于第 2 层绘制而被高亮盖住。所以
-// 标签挂在屏幕上,再用 lv_obj_align_to() 对齐到对应的行底色。
+// 标签挂在屏幕上,再用 lv_obj_align() 按行坐标对齐。
+//
+// 为什么不是 lv_obj_align_to():它按调用瞬间目标的**当前尺寸**算出绝对坐标并
+// 直接落位,而数值标签建出来时还是占位符 "-"。之后 refresh() 把文字换成更长的
+// 内容时,标签会以那个旧锚点为左边界向右扩张,右端被裁到屏幕外(这就是"每行
+// 后边的值只露出前几个字母"的原因)。lv_obj_align() 设置的是对齐样式,布局每
+// 次都会按当前尺寸重算,所以文字再长也仍贴着行右边缘,不会跑出屏幕。
+// 行与屏幕的几何在同一屏内是常量,直接按行索引算 y 即可,不需要行的对象句柄。
 // ---------------------------------------------------------------------------
 
 typedef struct {
     lv_obj_t *scr;
-    lv_obj_t *rows[MAX_ROWS];    // 行底色矩形(C_CARD)
     lv_obj_t *sel;               // 选中高亮矩形(C_SEL)
     lv_obj_t *vals[MAX_ROWS];
     int count;
@@ -123,7 +129,8 @@ static void page_init(list_page_t *p, const char *title, const char *const *name
 
     // 第 1 层:所有行的卡片底色。
     for (int i = 0; i < count && i < MAX_ROWS; i++) {
-        p->rows[i] = row_bg(p->scr, ROW_Y0 + i * ROW_PITCH);
+        // 只需要对象存在,后续不再引用:标签按行索引算坐标,不依赖句柄。
+        (void)row_bg(p->scr, ROW_Y0 + i * ROW_PITCH);
     }
 
     // 第 2 层:选中高亮。它在行底色之后创建,所以盖在选中行的底色上;几何与
@@ -140,10 +147,17 @@ static void page_init(list_page_t *p, const char *title, const char *const *name
 
     // 第 3 层:标签。挂在屏幕上(而非行底色里)才能绘制在高亮之上。
     for (int i = 0; i < count && i < MAX_ROWS; i++) {
+        // 行垂直中心。字号固定为 14,用它的行高把文字居中。
+        const int y_c = ROW_Y0 + i * ROW_PITCH + ROW_H / 2;
         lv_obj_t *n = label(p->scr, names[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_align_to(n, p->rows[i], LV_ALIGN_LEFT_MID, 10, 0);
+        lv_obj_align(n, LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
         p->vals[i] = label(p->scr, "-", &lv_font_montserrat_14, C_TEXT);
-        lv_obj_align_to(p->vals[i], p->rows[i], LV_ALIGN_RIGHT_MID, -10, 0);
+        // 右边缘对齐到行右侧内缩 10px 处。偏移量从屏幕右边缘往前算,所以不写死
+        // 屏幕宽度:屏幕是 240 宽时 240-(12+216-10)=22。
+        lv_obj_align(p->vals[i], LV_ALIGN_TOP_RIGHT,
+                     -(lv_obj_get_width(p->scr) - (ROW_X + ROW_W - 10)),
+                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
     }
 }
 
