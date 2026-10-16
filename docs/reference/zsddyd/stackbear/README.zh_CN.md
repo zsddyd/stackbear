@@ -52,7 +52,7 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
-     └ HELP      只讲两条看不出来的手势
+     └ HELP      三个长按按键说明(Hold UP / DOWN / OK)
 ```
 
 现在每个屏幕都是"选中 + 确认":UP/DOWN 移动高亮,OK 执行高亮那一行。这个手势在
@@ -89,11 +89,21 @@ Wi-Fi 与 Uplink 分列,因为"WiFi 通"并不等于"能上传"。
 7 行(正好一屏),所以除了新增的 HELP 行,外观没有任何变化。
 
 早先的 HELP 按页面分组,写了 32 行 —— 滚动能力就是为它加的。等每个屏幕都变成
-"选中 + 确认"之后,那些内容大多只是在复述高亮已经说明的事,于是 HELP 只剩两行:
-`Hold UP: Start/Stop recording` 与 `Hold OK: Wi-Fi hotspot setup`,一屏放得下,
-不再需要滚动。虚拟窗口机制留在列表里(它才是"页面加内容也不涨内存"的那部分);
-`main/sb_scroll.h` 是纯逻辑并有主机测试(`tests/test_sb_scroll.c`),覆盖最容易
-写错的边界:顶部/底部越界、条目少于可视行、空列表。
+"选中 + 确认"之后,那些内容大多只是在复述高亮已经说明的事,于是 HELP 改成三行,
+用与其它页面相同的 Key/值版式,一屏放得下、不再需要滚动:
+
+| Key | 值 |
+| --- | --- |
+| Hold UP | Start / stop |
+| Hold DOWN | Back a level |
+| Hold OK | Set up Wi-Fi |
+
+它没有光标(没有东西可执行),SETTINGS 里那一行也不再加右侧摘要 —— `Help` 这个名字
+本身就是完整的说明。取值宽度按这套版式最紧的约束算:最宽的 Key 是 `Hold DOWN`
+(88px),右对齐的取值只剩 98px,而三个取值实测 80 / 85 / 90px,都不会被截断。
+虚拟窗口机制留在列表里(它才是"页面加内容也不涨内存"的那部分);`main/sb_scroll.h`
+是纯逻辑并有主机测试(`tests/test_sb_scroll.c`),覆盖最容易写错的边界:顶部/底部
+越界、条目少于可视行、空列表。
 
 DEVICE 的取值不会越出自己的那一列。`Slot` 显示 `A`/`B`,不用内部的 `ota_0`/`ota_1`
 (字母就是 OTA 切换的那两个槽);`Branch` 未选中时显示以 `...` 结尾的前缀,把光标停在

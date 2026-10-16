@@ -57,7 +57,7 @@ HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
-     └ HELP      the two gestures that are not self-evident
+     └ HELP      the three long-press gestures (Hold UP / DOWN / OK)
 ```
 
 Every screen is now select-and-confirm: UP/DOWN move the highlight, OK runs the
@@ -104,12 +104,24 @@ is exactly one screen, so nothing visible changed except the new HELP row.
 
 An earlier HELP was grouped by page and ran to 32 lines, which is why the
 scrolling existed. Once every screen became select-and-confirm, that copy was
-mostly restating what the highlight already shows, so HELP is now two lines —
-`Hold UP: Start/Stop recording` and `Hold OK: Wi-Fi hotspot setup` — and needs no
-scroll. The virtual-window machinery stays in place for the lists (it is what
-keeps memory flat as pages grow); `main/sb_scroll.h` is pure and host-tested
-(`tests/test_sb_scroll.c`) across the boundaries that are easy to get wrong: top
-and bottom overrun, fewer items than rows, and empty lists.
+mostly restating what the highlight already shows, so HELP is now three rows in
+the same Key/value layout the other pages use, and needs no scroll:
+
+| Key | Value |
+| --- | --- |
+| Hold UP | Start / stop |
+| Hold DOWN | Back a level |
+| Hold OK | Set up Wi-Fi |
+
+It has no cursor (there is nothing to run) and no summary on the SETTINGS row —
+the name `Help` is already the whole explanation. The values are sized to the
+narrowest budget that layout allows: the widest key is `Hold DOWN` (88 px), which
+leaves 98 px for the right-aligned value, and the three values measure 80 / 85 /
+90 px, so none of them is clipped. The virtual-window machinery stays in place
+for the lists (it is what keeps memory flat as pages grow); `main/sb_scroll.h` is
+pure and host-tested (`tests/test_sb_scroll.c`) across the boundaries that are
+easy to get wrong: top and bottom overrun, fewer items than rows, and empty
+lists.
 
 DEVICE keeps its values inside their own column. `Slot` shows `A` or `B` rather
 than the internal `ota_0`/`ota_1` (the letters are the same two slots the OTA

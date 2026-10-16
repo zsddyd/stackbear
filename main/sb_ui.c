@@ -549,38 +549,43 @@ static void build_provision(void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Help:只讲**光看屏幕猜不出来**的两件事。
+// Help:三行长按键说明,用与其它页面相同的"Key 左 + 值右"布局。
 //
-// 早先这里按页面分组写了三十多行,把 "tap UP/DOWN = move cursor"、"tap OK = 选中"
-// 也说了一遍。那些是看屏幕就能学会的(有高亮跟着动),写出来只是噪音,还把真正
-// 需要注意的两条埋在里头。现在同理心检查一遍:UP/DOWN 选中、OK 确认、长按 DOWN
-// 返回都符合直觉,不必写;只有"长按 UP 是开关录音"和"长按 OK 进配网"没有线索,
-// 这两条留在这里。
+// 与别的列表页的区别只有一点:这里没有光标(没有可执行的动作),所以不做高亮,
+// 三行都只是静态说明;进出的方式与子页一致(长按 DOWN 返回)。
 //
-// 文案宽度按真实字体量过:文本列 216px,两行分别 212px / 215px,不折行不裁字。
+// 只写"光看屏幕猜不出来"的三条。早先这里按页面分组写了三十多行,把
+// "tap UP/DOWN = move cursor"、"tap OK = 选中"也说了一遍 —— 那些有高亮跟着动,
+// 看屏幕就能学会,写出来只是噪音。
+//
+// 版式就是标准的"Key 左 + 值右",左右内缩各 10px,所以 Key 从 x=22 起、值右边缘
+// 在 x=218。最宽的 Key 是 "Hold DOWN"(88px),值就在 x=120..218 之间,可用 98px。
+// 三个取值分别是 80 / 84 / 90px(按真实字体量的),都能整段显示,不会被截断。
 // ---------------------------------------------------------------------------
 
-#define HELP_VIEW_Y   44
-#define HELP_VIEW_W   216
+#define HELP_ROW_Y0 38
 
 static lv_obj_t *s_help_scr;
-static lv_obj_t *s_help_body;
 
-static const char *const HELP_TEXT =
-    "Hold UP: Start/Stop recording\n"
-    "Hold OK: Wi-Fi hotspot setup";
+static const char *const HELP_KEYS[]   = {"Hold UP", "Hold DOWN", "Hold OK"};
+static const char *const HELP_VALUES[] = {"Start / stop", "Back a level", "Set up Wi-Fi"};
 
 static void build_help(void)
 {
     s_help_scr = base_screen("HELP");
 
-    // 两行文案一屏放得下,所以这里没有滚动、没有滚动条 —— 只有一张卡片。曾经需要
-    // 整页滚动是因为文案有三十多行;把"看屏幕就能学会的"删掉之后就不需要了。
-    // 说明放在卡片里(而不是直接铺在屏幕上),是为了与其它页面共用同一套视觉语言。
-    lv_obj_t *c = card(s_help_scr, ROW_X, HELP_VIEW_Y, ROW_W, 84, C_CARD);
-    s_help_body = label(c, HELP_TEXT, &lv_font_montserrat_14, C_TEXT);
-    lv_obj_set_width(s_help_body, HELP_VIEW_W - 28);
-    lv_obj_align(s_help_body, LV_ALIGN_LEFT_MID, 14, 0);
+    for (int i = 0; i < 3; i++) {
+        const int y = HELP_ROW_Y0 + i * ROW_PITCH;
+        (void)row_bg(s_help_scr, y);
+        const int y_c = y + ROW_H / 2;
+        lv_obj_t *k = label(s_help_scr, HELP_KEYS[i], &lv_font_montserrat_14, C_MUTED);
+        lv_obj_align(k, LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        lv_obj_t *v = label(s_help_scr, HELP_VALUES[i], &lv_font_montserrat_14, C_TEXT);
+        lv_obj_align(v, LV_ALIGN_TOP_RIGHT,
+                     -(lv_obj_get_width(s_help_scr) - (ROW_X + ROW_W - 10)),
+                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+    }
 }
 
 static void build_pages(void)
@@ -646,7 +651,8 @@ static void refresh_menu(void)
         page_set(&s_menu, SB_MENU_STORAGE, "off", C_MUTED);
     }
     page_set(&s_menu, SB_MENU_DEVICE, sb_version_short(), C_TEXT);
-    page_set(&s_menu, SB_MENU_HELP, "key guide", C_TEXT);
+    // Help 行不给右侧摘要:"Help" 本身就是完整的说明,再加一句摘要只是噪音。
+    page_set(&s_menu, SB_MENU_HELP, "", C_TEXT);
 }
 
 static void refresh_net(void)
