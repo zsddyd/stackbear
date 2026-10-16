@@ -4,7 +4,12 @@
 The manifest carries the version string the firmware compares against, the
 sha256 the device verifies after download, and the URL it fetches. The version
 string must match what sb_version_short() produces on the device
-("v<APP_VERSION>+<git short sha>"), so the device recognises "already current".
+("v<APP_VERSION>+<git short commit>"), so it recognises "already current".
+
+The commit abbreviation length is shared with the firmware: both this tool and
+main/CMakeLists.txt ask git for --short=8, so both sides get the same value and
+neither truncates by hand (a hand-rolled length would bypass git's uniqueness
+guarantee and can make the device re-flash the same image forever).
 """
 
 from __future__ import annotations
@@ -45,7 +50,11 @@ def main() -> int:
     image = pathlib.Path(args.image)
     blob = image.read_bytes()
     sha = hashlib.sha256(blob).hexdigest()
-    commit = git_value(["rev-parse", "--short=7", "HEAD"], "unknown")
+    # Must stay in step with the firmware: main/CMakeLists.txt injects the same
+    # 8-character abbreviation, and sb_version_short() composes the identical
+    # string. `--short=8` means "at least 8, unique", so git extends it when
+    # necessary - both sides use git's answer rather than truncating by hand.
+    commit = git_value(["rev-parse", "--short=8", "HEAD"], "unknown")
     version = f"v{app_version(repo)}+{commit}"
     # Deploy name carries the commit so images never collide in the firmware dir.
     published = f"app-{commit}.bin"

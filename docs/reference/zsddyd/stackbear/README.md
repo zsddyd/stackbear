@@ -140,6 +140,40 @@ beside it; long OTA failure reasons are clipped the same way. The `Check for
 update` row needs no `press OK` hint: its name is already drawn in the link
 colour.
 
+### Version and commit: one identity, two halves
+
+The device and the OTA manifest compare exactly one string — the *identity*:
+
+```text
+identity = "v" + <version number> + "+" + <8-character commit>
+example  = "v0.7.5+db020abb"
+```
+
+The two halves have different jobs, so they come from different places:
+
+| Half | Source | Character |
+| --- | --- | --- |
+| Version number (`0.7.5`) | `set(SB_APP_VERSION ...)` in `main/CMakeLists.txt`, edited by hand | the human-facing "how big was this change" |
+| Commit (`db020abb`) | `git rev-parse --short=8 HEAD`, injected by CMake | automatic, and the only part that is guaranteed unique |
+
+The DEVICE page shows the halves separately — `Firmware` is the bare version
+number and `Commit` is the 8-character commit — and those two values recompose
+the identity string exactly. Keeping them apart on screen is deliberate: one is
+what a person compares to judge "newer", the other is what pins an exact build.
+
+**Eight characters, and the same eight on both sides.** `--short=8` means "a
+unique prefix of *at least* 8 characters": git extends it further if 8 would be
+ambiguous. Neither side truncates by hand, so both get git's own answer and the
+two strings match by construction. This matters because a mismatch is not a
+build error — it is a device that treats every version as new and re-downloads
+and re-flashes the same image on every check. `tests/test_sb_version.c` pins the
+firmware's format and `tests/test_ota_identity.py` pins the tool's; both expect
+8 and the same template.
+
+Comparison is equality, not ordering: any difference (including an *older*
+manifest) triggers a download and flash. Rolling back therefore means
+re-publishing the older image under its original identity.
+
 ## Hand-won engineering findings
 
 These were all found with the on-device console tool, in this order:

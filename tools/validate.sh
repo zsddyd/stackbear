@@ -67,6 +67,14 @@ run_static_checks() {
         tests/test_sb_text.c main/sb_text.c \
         -o "${test_dir}/test_sb_text"
     "${test_dir}/test_sb_text"
+    # 版本/提交号:身份串的两半必须在设备与 CI 两侧拼成同一个字符串,
+    # 所以固定住宏的值,断言的期望与 make_ota_manifest.py 的模板一致。
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/stubs_esp \
+        -DSB_APP_VERSION='"0.7.5"' -DSB_GIT_COMMIT='"df4e58d1"' \
+        -DSB_GIT_BRANCH='"test"' -DSB_BUILD_TIME='"1970-01-01 00:00 UTC"' \
+        tests/test_sb_version.c main/sb_version.c tests/stubs_esp/esp_ota_ops_stub.c \
+        -o "${test_dir}/test_sb_version"
+    "${test_dir}/test_sb_version"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_sb_key_nav.c \
         -o "${test_dir}/test_sb_key_nav"
@@ -103,6 +111,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_battery_contract.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_ota_identity.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py

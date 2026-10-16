@@ -24,11 +24,16 @@ idf_component_register(
 
 # --- 构建信息注入(版本页显示 git 提交与编译时间)--------------------------------
 # 这些值被 main/sb_version.h 使用。取不到 git 时用 unknown,不让构建失败。
+#
+# 提交短号统一用 8 位,**由 git 自己保证唯一**(`--short=8` 的语义是"至少 8 位、
+# 且唯一":万一 8 位不够区分,git 会自动加长)。不要把这里换成手工截断 ——
+# tools/make_ota_manifest.py 也用 `--short=8`,两边必须拿到同一个字符串,否则
+# 设备会把每个版本都当成新版本,每次检查都重刷一遍。
 find_package(Git QUIET)
 set(SB_GIT_COMMIT "unknown")
 set(SB_GIT_BRANCH "unknown")
 if(GIT_FOUND)
-    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
                     OUTPUT_VARIABLE SB_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
                     ERROR_QUIET RESULT_VARIABLE _rc)
@@ -44,7 +49,7 @@ if(GIT_FOUND)
     string(STRIP "${SB_GIT_BRANCH}" SB_GIT_BRANCH)
 endif()
 string(TIMESTAMP SB_BUILD_TIME "%Y-%m-%d %H:%M UTC" UTC)
-set(SB_APP_VERSION "0.7.4")
+set(SB_APP_VERSION "0.7.5")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SB_GIT_COMMIT="${SB_GIT_COMMIT}"

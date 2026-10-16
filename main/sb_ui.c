@@ -677,7 +677,8 @@ static void refresh_menu(void)
     } else {
         page_set(&s_menu, SB_MENU_STORAGE, "off", C_MUTED);
     }
-    page_set(&s_menu, SB_MENU_DEVICE, sb_version_short(), C_TEXT);
+    // 菜单上的摘要只给版本号:那里空间有限,提交号在 DEVICE 页里再看。
+    page_set(&s_menu, SB_MENU_DEVICE, sb_version_number(), C_TEXT);
     // Help 行不给右侧摘要:"Help" 本身就是完整的说明,再加一句摘要只是噪音。
     page_set(&s_menu, SB_MENU_HELP, "", C_TEXT);
 }
@@ -768,9 +769,11 @@ static void refresh_dev(void)
 {
     char buf[64];
     page_set(&s_dev, DEV_ROW_DEV_ID, sb_config_get()->dev_id, C_TEXT);
-    page_set(&s_dev, DEV_ROW_FW, sb_version_short(), C_TEXT);
+    // 两行分工明确:Firmware = 纯版本号(人比较"新旧"用),Commit = 8 位提交号
+    // (机器/精确定位用)。合起来才是 OTA 身份串 sb_version_short()。
+    page_set(&s_dev, DEV_ROW_FW, sb_version_number(), C_TEXT);
     page_set(&s_dev, DEV_ROW_SLOT, slot_letter(), C_TEXT);
-    page_set(&s_dev, DEV_ROW_COMMIT, SB_GIT_COMMIT, C_TEXT);
+    page_set(&s_dev, DEV_ROW_COMMIT, sb_version_commit(), C_TEXT);
 
     if (s_dev.win.cursor == DEV_ROW_BRANCH) {
         // 选中:Branch 太长时循环滚动,不截断,让用户看全。
