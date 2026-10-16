@@ -128,7 +128,7 @@ lv_display_t *bsp_lvgl_init(void) {
 
     // Mask the final RGB565 flush instead of using root-screen clip_corner.
     // Full-screen rounded clipping creates an ARGB layer that does not fit the
-    // 24 KB LVGL pool reliably on this no-PSRAM target.
+    // LVGL pool reliably on this no-PSRAM target.
     s_disp = disp;
     lv_timer_handler_set_resume_cb(lvgl_resume_cb, NULL);
     lvgl_port_unlock();

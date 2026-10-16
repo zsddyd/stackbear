@@ -24,9 +24,17 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_DEF_REFR_PERIOD=20
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
-# LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 本 demo UI 简单,24KB 足够;若自建复杂界面出现绘制卡死/看门狗,调大此值。
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# LVGL 内置 malloc 池大小(字节)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
+#
+# 用字节单位而非已弃用的 CONFIG_LV_MEM_SIZE_KILOBYTES:LVGL 9.6 起后者只是兼容项,
+# 而 ESP-IDF 生成的 sdkconfig 会把所有 int 符号连同默认值写入,于是 KB 符号与
+# LV_MEM_SIZE 的默认值 65536 同时存在,LVGL 优先取后者 —— 旧写法实际得到 64 KB,
+# 既白白多占 40 KB 静态 RAM,又让本行配置形同无效。
+#
+# 本板无 PSRAM,池按实测峰值配置:在主机上以 32 位(wasm32/ILP32,与 ESP32-C3
+# 同样 4 字节指针)编译真实 UI 并读取 lv_mem_monitor(),7 个页面全部建好后的峰值为
+# 32.9 KB。48 KB 留约 16 KB 余量,给后续新增页面/字体;不要调到 32 KB 以下。
+CONFIG_LV_MEM_SIZE=49152
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
