@@ -24,6 +24,7 @@
 #include "lvgl.h"
 #include "sb_config.h"
 #include "sb_cache.h"
+#include "sb_key_nav.h"
 #include "sb_net.h"
 #include "sb_recorder.h"
 #include "sb_ui.h"
@@ -42,7 +43,15 @@ static QueueHandle_t s_input_queue;
 static volatile bool s_input_ready;
 static volatile bool s_setup_mode;
 static volatile bool s_uplink_started;
-static sb_screen_t s_screen = SB_SCREEN_HOME;
+
+// 当前页面只由 sb_ui 持有。main 以前自己留了一份副本,但 sb_ui_back() 只改 UI 内部
+// 状态,副本不会跟着更新:长按 DOWN 返回主页后,main 仍以为在列表页,于是之后的单按
+// 被当成"列表导航"(在主页上 sb_ui_move() 无效果),表现为"暂停后按上键进不去 Status"。
+// 现在统一向 sb_ui 查询,不再维护第二份状态。
+
+// 列表页的轻点判定(见 sb_key_nav.h):按键组件会把快速连按合并成多击且只在结束时
+// 按次数派发,3 次及以上不派发任何事件,所以列表页不能依赖 SINGLE_CLICK。
+static sb_key_nav_t s_key_nav;
 
 static void ui_show_locked(sb_screen_t screen)
 {
@@ -51,7 +60,6 @@ static void ui_show_locked(sb_screen_t screen)
     }
     sb_ui_show(screen);
     bsp_lvgl_unlock();
-    s_screen = screen;
 }
 
 static void enter_setup_locked(void);
@@ -70,6 +78,21 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 static void handle_input(const input_event_t *in)
 {
+    // 先把上下键的"按下/长按/抬起"喂给轻点判定,配网页里也照喂:否则退出配网后
+    // 可能留下一次陈旧的按下记录,抬起时算成轻点,产生一次幽灵移动。
+    if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
+        if (in->event == BSP_BTN_PRESS) {
+            sb_key_nav_press(&s_key_nav);
+        } else if (in->event == BSP_BTN_LONG) {
+            sb_key_nav_long(&s_key_nav);
+        }
+    }
+    // 抬起:只有"这次按压没变成长按"才算一次轻点。列表页用它移动光标;主页不消费
+    // 这个结果,但仍要在这里更新状态,免得留下陈旧的按下记录。
+    const bool tap =
+        (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) &&
+        in->event == BSP_BTN_RELEASE && sb_key_nav_release(&s_key_nav);
+
     if (s_setup_mode) {
         if (in->btn == BSP_BTN_OK && in->event == BSP_BTN_LONG) {
             exit_setup_locked();
@@ -80,9 +103,9 @@ static void handle_input(const input_event_t *in)
         enter_setup_locked();
         return;
     }
-    // UP 双击或长按 = 开始 / 停止录音(会话级:停止会结束当前会话并封文件)。
-    if (in->btn == BSP_BTN_UP &&
-        (in->event == BSP_BTN_DOUBLE || in->event == BSP_BTN_LONG)) {
+    // 长按上键 = 开始 / 停止录音(会话级:停止会结束当前会话并封文件)。
+    // 长按在列表页同样生效,且因为长按抬起不算轻点,不会顺带移动光标。
+    if (in->btn == BSP_BTN_UP && in->event == BSP_BTN_LONG) {
         toggle_recording();
         return;
     }
@@ -94,27 +117,34 @@ static void handle_input(const input_event_t *in)
         }
         return;
     }
-    // 列表页(分组菜单与四个子页)统一语义:UP/DOWN 移动光标,OK 激活当前行。
-    // 每一行是不是可操作由 UI 自己判断(见 sb_ui_row_actionable),这样上层不必
-    // 知道"第几行是哪一项"。
-    const sb_screen_t screen = s_screen;
-    if (screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET || screen == SB_SCREEN_REC ||
-        screen == SB_SCREEN_DEV || screen == SB_SCREEN_STORAGE) {
-        if (in->event != BSP_BTN_CLICK) {
-            return;
+
+    // 页面相关的路由需要知道当前页面,而当前页面由 sb_ui 持有:统一加锁后查询,
+    // 不再维护第二份副本(副本会与 sb_ui_back()/sb_ui_activate() 的内部跳转失步)。
+    if (!bsp_lvgl_lock(300)) {
+        return;  // 拿不到锁就不猜页面,丢弃这次按键,避免误路由
+    }
+    const sb_screen_t screen = sb_ui_current();
+    const bool is_list = screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET ||
+                         screen == SB_SCREEN_REC || screen == SB_SCREEN_DEV ||
+                         screen == SB_SCREEN_STORAGE;
+    if (is_list) {
+        // 列表页:UP/DOWN 每次轻点移动一格,OK 单击激活当前行。每一行是不是可操作
+        // 由 UI 自己判断(见 sb_ui_row_actionable),上层不必知道"第几行是哪一项"。
+        // 这里用轻点而非 CLICK:CLICK 只在孤立单按时才产生,连按会被组件合并成多击
+        // 且 3 次以上完全不派发,光标就不会动。
+        if (tap && (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN)) {
+            sb_ui_move(in->btn == BSP_BTN_DOWN ? 1 : -1);
+        } else if (in->btn == BSP_BTN_OK && in->event == BSP_BTN_CLICK) {
+            sb_ui_activate();
         }
-        if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-            const int delta = (in->btn == BSP_BTN_DOWN) ? 1 : -1;
-            if (bsp_lvgl_lock(300)) {
-                sb_ui_move(delta);
-                bsp_lvgl_unlock();
-            }
-        } else if (in->btn == BSP_BTN_OK) {
-            if (bsp_lvgl_lock(300)) {
-                sb_ui_activate();
-                bsp_lvgl_unlock();
-            }
-        }
+        bsp_lvgl_unlock();
+        return;
+    }
+    bsp_lvgl_unlock();
+
+    // 主页:UP 双击 = 开始/停止录音(与长按并列的既有手势,保留)。
+    if (in->btn == BSP_BTN_UP && in->event == BSP_BTN_DOUBLE) {
+        toggle_recording();
         return;
     }
     if (in->event != BSP_BTN_CLICK) {

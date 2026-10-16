@@ -59,6 +59,10 @@ run_static_checks() {
         tests/test_sb_nav.c main/sb_nav.c \
         -o "${test_dir}/test_sb_nav"
     "${test_dir}/test_sb_nav"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_sb_key_nav.c \
+        -o "${test_dir}/test_sb_key_nav"
+    "${test_dir}/test_sb_key_nav"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
