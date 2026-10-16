@@ -47,6 +47,3 @@ esp_err_t sb_net_provision_stop(void);
 
 // 配网结果:0=进行中,1=成功(凭据已保存),-1=用户取消/超时。
 int sb_net_provision_result(void);
-
-// 让配网页重新扫描周边热点。
-void sb_net_request_scan(void);

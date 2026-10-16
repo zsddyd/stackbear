@@ -58,12 +58,28 @@ HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
      └ STORAGE   Cache / Size / Used / Pending / Dropped
 ```
 
-Keys are uniform: **UP/DOWN** move the cursor, **OK** acts on the current row,
-**long-press DOWN** goes back one level, **long-press OK** enters provisioning,
-**double/long-press UP** starts or stops recording. The aggregate state (which
-fuses credential, link, pause and uplink) lives only on HOME so no sub-page
-repeats it; Wi-Fi and Uplink are separate rows because a healthy Wi-Fi link does
-not imply uploads work.
+Keys are uniform and per-page consistent. A "tap" is one press-and-release;
+there is no double-tap gesture, because the button component merges taps closer
+than its short-press window (180 ms here) into one multi-click sequence, which
+would make the meaning of "twice" depend on how fast the user pressed. Recording
+is a session-level destructive action, so it is bound to a long press only:
+
+| Page | UP tap | DOWN tap | OK tap | UP long | DOWN long | OK long |
+| --- | --- | --- | --- | --- | --- | --- |
+| HOME | enter Status | enter Status | soft pause/resume | start/stop recording | — | enter provisioning |
+| STATUS | cursor up | cursor down | open sub-page | — | back to HOME | enter provisioning |
+| NETWORK / RECORDER | cursor up | cursor down | — (read-only) | — | back to STATUS | enter provisioning |
+| DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to STATUS | enter provisioning |
+| STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to STATUS | enter provisioning |
+| SETUP (provisioning) | — | — | — | — | — | cancel and return |
+
+Taps always move one row each, however fast they are repeated. Rows that respond
+to OK show their name in the accent colour; the rest are read-only. Recording is
+deliberately not bound on list pages so that browsing cannot stop a session. The
+provisioning page is a modal and says so on screen (`UP/DOWN off, hold OK to
+exit`). The aggregate state (which fuses credential, link, pause and uplink)
+lives only on HOME so no sub-page repeats it; Wi-Fi and Uplink are separate rows
+because a healthy Wi-Fi link does not imply uploads work.
 
 ## Hand-won engineering findings
 

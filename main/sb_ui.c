@@ -101,6 +101,7 @@ typedef struct {
     lv_obj_t *scr;
     lv_obj_t *sel;               // 选中高亮矩形(C_SEL)
     lv_obj_t *vals[MAX_ROWS];
+    sb_nav_page_t nav;           // 该页在 sb_nav 里的身份:行是否可操作由它决定
     int count;
     int cursor;
 } list_page_t;
@@ -121,10 +122,12 @@ static lv_obj_t *row_bg(lv_obj_t *parent, int y)
     return o;
 }
 
-static void page_init(list_page_t *p, const char *title, const char *const *names, int count)
+static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
+                      const char *const *names, int count)
 {
     p->count = count;
     p->cursor = 0;
+    p->nav = nav;
     p->scr = base_screen(title);
 
     // 第 1 层:所有行的卡片底色。
@@ -149,7 +152,12 @@ static void page_init(list_page_t *p, const char *title, const char *const *name
     for (int i = 0; i < count && i < MAX_ROWS; i++) {
         // 行垂直中心。字号固定为 14,用它的行高把文字居中。
         const int y_c = ROW_Y0 + i * ROW_PITCH + ROW_H / 2;
-        lv_obj_t *n = label(p->scr, names[i], &lv_font_montserrat_14, C_MUTED);
+        // 可操作行的名称用强调色标出:否则用户看不出哪些行按 OK 有反应
+        // (DEVICE 只有最后一行可用,其余行按 OK 静默无反应)。是否可操作只有一处
+        // 事实来源(sb_nav),界面不重复定义规则。
+        const bool act = sb_nav_row_actionable(nav, i);
+        lv_obj_t *n = label(p->scr, names[i], &lv_font_montserrat_14,
+                            act ? C_ACCENT : C_MUTED);
         lv_obj_align(n, LV_ALIGN_TOP_LEFT, ROW_X + 10,
                      y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
         p->vals[i] = label(p->scr, "-", &lv_font_montserrat_14, C_TEXT);
@@ -326,7 +334,10 @@ static void build_provision(void)
     lv_obj_align(l3, LV_ALIGN_TOP_LEFT, 14, 104);
     lv_obj_t *l4 = label(c, "http://192.168.4.1/", &lv_font_montserrat_14, C_ACCENT);
     lv_obj_align(l4, LV_ALIGN_TOP_LEFT, 14, 128);
-    lv_obj_t *hint = label(s_prov_scr, "hold OK: cancel", &lv_font_montserrat_14, C_MUTED);
+    // 配网页是模态:UP/DOWN 与 OK 短按在这里刻意不做事,只有长按 OK 能退出。
+    // 明写出来,否则用户在配网页上按上/下会以为设备卡住了(其他每个页面它们都有作用)。
+    lv_obj_t *hint = label(s_prov_scr, "UP/DOWN off, hold OK to exit",
+                           &lv_font_montserrat_14, C_MUTED);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
 
@@ -337,7 +348,7 @@ static void build_provision(void)
 static void build_pages(void)
 {
     static const char *menu_names[] = {"Network", "Recorder", "Device", "Storage"};
-    page_init(&s_menu, "STATUS", menu_names, 4);
+    page_init(&s_menu, SB_NAV_MENU, "STATUS", menu_names, 4);
 
     // 页面行数必须与 sb_nav(层级与光标边界的唯一事实来源)一致,否则光标会
     // 停到不存在的行、或漏掉最后一行。放在这里用编译期断言钉住。
@@ -346,24 +357,24 @@ static void build_pages(void)
 
     // NETWORK:Wi-Fi 与 Uplink 分列 —— "WiFi 通"不等于"能上传"。
     static const char *net_names[] = {"Wi-Fi", "SSID", "Device IP", "Server IP", "Uplink"};
-    page_init(&s_net, "NETWORK", net_names, 5);
+    page_init(&s_net, SB_NAV_NET, "NETWORK", net_names, 5);
     _Static_assert(sizeof(net_names) / sizeof(net_names[0]) ==
                        SB_NAV_NET_ROWS, "net row count must match sb_nav");
 
     // RECORDER:只讲录音本身,不重复 WiFi 状态。
     static const char *rec_names[] = {"Recording", "Segments", "Sent", "Dropped"};
-    page_init(&s_rec, "RECORDER", rec_names, 4);
+    page_init(&s_rec, SB_NAV_REC, "RECORDER", rec_names, 4);
     _Static_assert(sizeof(rec_names) / sizeof(rec_names[0]) ==
                        SB_NAV_REC_ROWS, "rec row count must match sb_nav");
 
     static const char *dev_names[] = {"Device ID", "Firmware", "Slot", "Commit",
                                       "Branch", "Built", "Check for update"};
-    page_init(&s_dev, "DEVICE", dev_names, 7);
+    page_init(&s_dev, SB_NAV_DEV, "DEVICE", dev_names, 7);
     _Static_assert(sizeof(dev_names) / sizeof(dev_names[0]) ==
                        SB_NAV_DEV_ROWS, "dev row count must match sb_nav");
 
     static const char *stor_names[] = {"Cache", "Size", "Used", "Pending", "Dropped"};
-    page_init(&s_stor, "STORAGE", stor_names, 5);
+    page_init(&s_stor, SB_NAV_STORAGE, "STORAGE", stor_names, 5);
     _Static_assert(sizeof(stor_names) / sizeof(stor_names[0]) ==
                        SB_NAV_STORAGE_ROWS, "storage row count must match sb_nav");
 }
@@ -602,12 +613,13 @@ void sb_ui_move(int delta)
 
 bool sb_ui_row_actionable(void)
 {
-    // 可操作行的判断只有一处事实来源(sb_nav),界面不重复定义规则。
+    // 可操作行的判断只有一处事实来源(sb_nav),界面不重复定义规则。页面身份在建页
+    // 时已存进 list_page_t,这里直接用,不再从屏幕枚举反推一次。
     const list_page_t *p = current_page();
     if (p == NULL) {
         return false;
     }
-    return sb_nav_row_actionable(to_nav(s_screen), p->cursor);
+    return sb_nav_row_actionable(p->nav, p->cursor);
 }
 
 void sb_ui_activate(void)

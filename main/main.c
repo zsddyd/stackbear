@@ -3,11 +3,16 @@
 // 与基线 demo 的差别:这里没有测试菜单,启动即进入自研界面(Home / Status / Setup),
 // 联网后自动开始"常开 VAD 录音 -> IMA-ADPCM 编码 -> 私有协议上传 ECS"。
 //
-// 按键语义:
-//   UP   双击 / 长按 : 开始 / 停止录音(会话级)
-//   OK   短按        : 软暂停 / 继续(不改会话)
+// 按键语义(逐页一致,详见 docs/reference/zsddyd/stackbear/README.md 的按键表):
+//   UP / DOWN 短按   : 列表页移动光标;主页进入 Status
+//   OK   短按        : 主页 = 软暂停 / 继续;列表页 = 激活当前行(仅可操作行)
+//   UP   长按        : 主页 = 开始 / 停止录音(会话级);列表页不响应,避免浏览时误停
+//   DOWN 长按        : 逐级返回(子页 -> 菜单 -> 主页)
 //   OK   长按        : 进入配网模式;配网中再长按 = 取消并返回
-//   UP / DOWN 短按   : 在 Home 与 Status 页之间切换
+//
+// 不做"双击"手势:按键组件把间隔小于短按窗口(本板 180ms)的连按合并成多击,
+// 于是"双击"的含义会随按键速度变化,且与"连按两次移动两格"冲突。录音这种会话级
+// 破坏性操作只绑定长按,不绑定依赖速度的手势。
 #include <string.h>
 
 #include "bsp_audio.h"
@@ -103,12 +108,6 @@ static void handle_input(const input_event_t *in)
         enter_setup_locked();
         return;
     }
-    // 长按上键 = 开始 / 停止录音(会话级:停止会结束当前会话并封文件)。
-    // 长按在列表页同样生效,且因为长按抬起不算轻点,不会顺带移动光标。
-    if (in->btn == BSP_BTN_UP && in->event == BSP_BTN_LONG) {
-        toggle_recording();
-        return;
-    }
     // 长按下键 = 逐级返回(子页 -> 分组菜单 -> 主页)。
     if (in->event == BSP_BTN_LONG && in->btn == BSP_BTN_DOWN) {
         if (bsp_lvgl_lock(300)) {
@@ -132,6 +131,9 @@ static void handle_input(const input_event_t *in)
         // 由 UI 自己判断(见 sb_ui_row_actionable),上层不必知道"第几行是哪一项"。
         // 这里用轻点而非 CLICK:CLICK 只在孤立单按时才产生,连按会被组件合并成多击
         // 且 3 次以上完全不派发,光标就不会动。
+        //
+        // 列表页不响应长按 UP:录音是会话级破坏操作(停止会结束当前会话并封文件),
+        // 放在浏览菜单时最容易误触。切录音只在主页长按 UP。
         if (tap && (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN)) {
             sb_ui_move(in->btn == BSP_BTN_DOWN ? 1 : -1);
         } else if (in->btn == BSP_BTN_OK && in->event == BSP_BTN_CLICK) {
@@ -142,8 +144,8 @@ static void handle_input(const input_event_t *in)
     }
     bsp_lvgl_unlock();
 
-    // 主页:UP 双击 = 开始/停止录音(与长按并列的既有手势,保留)。
-    if (in->btn == BSP_BTN_UP && in->event == BSP_BTN_DOUBLE) {
+    // 主页:长按 UP = 开始 / 停止录音(会话级:停止会结束当前会话并封文件)。
+    if (in->btn == BSP_BTN_UP && in->event == BSP_BTN_LONG) {
         toggle_recording();
         return;
     }

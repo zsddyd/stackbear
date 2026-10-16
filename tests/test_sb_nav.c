@@ -101,12 +101,34 @@ static void test_actionable_rows(void)
     CHECK(!sb_nav_row_actionable(SB_NAV_HOME, 0), "");
 }
 
+// 界面用 sb_nav_row_actionable() 给可操作行的名称上强调色(用户否则看不出
+// 哪些行按 OK 有反应)。这里钉住"确实存在可操作行"以及"菜单每行都可操作",
+// 免得规则被改成全部不可操作后界面变成一片灰、也没人发现。
+static void test_actionable_marker_contract(void)
+{
+    int actionable_pages = 0;
+    for (sb_nav_page_t p = SB_NAV_MENU; p <= SB_NAV_STORAGE; p++) {
+        const int rows = sb_nav_rows(p);
+        int marked = 0;
+        for (int r = 0; r < rows; r++) {
+            if (sb_nav_row_actionable(p, r)) marked++;
+        }
+        if (marked > 0) actionable_pages++;
+        if (p == SB_NAV_MENU) {
+            CHECK(marked == rows, "every menu row is actionable");
+        }
+    }
+    // 四个子页里 DEVICE 与 STORAGE 各有可操作行,菜单也有;NETWORK/RECORDER 没有。
+    CHECK(actionable_pages == 3, "exactly three pages carry actionable rows");
+}
+
 int main(void)
 {
     test_parent_chain();
     test_menu_targets();
     test_rows_and_clamp();
     test_actionable_rows();
+    test_actionable_marker_contract();
     if (g_failures == 0) {
         printf("test_sb_nav: PASS\n");
         return 0;
