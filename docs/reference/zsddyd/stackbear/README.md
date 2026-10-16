@@ -60,6 +60,10 @@ HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
      └ HELP      the three long-press gestures (Hold UP / DOWN / OK)
 ```
 
+Every screen shows the battery percentage in its top-right corner. It used to be
+on HOME only, so entering a sub-page hid it; the readout is now created and
+registered by the shared screen builder, and the fuel gauge is read in one place.
+
 Every screen is now select-and-confirm: UP/DOWN move the highlight, OK runs the
 highlighted row. That is the same gesture on HOME (two rows), SETTINGS and the
 sub-pages, so only two gestures remain that the screen cannot teach by itself —

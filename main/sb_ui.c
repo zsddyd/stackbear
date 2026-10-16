@@ -74,6 +74,14 @@ static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font
     return l;
 }
 
+// 每个页面右上角都要有电量,所以它在这里统一创建 —— 而不是让每个页面自己记得加。
+// 曾经只有 HOME 有,用户一进子页就看不到电量了(而"还剩多少电"恰恰是子页里最想
+// 顺手确认的一件事)。每块屏幕是独立对象,不能共用一个标签,所以登记下来统一刷新。
+#define BATT_MAX_SCREENS 8   // HOME + 5 个设置页 + HELP + 配网
+
+static lv_obj_t *s_batt_label[BATT_MAX_SCREENS];
+static int s_batt_count;
+
 static lv_obj_t *base_screen(const char *title)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
@@ -83,7 +91,27 @@ static lv_obj_t *base_screen(const char *title)
     lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_t *t = label(scr, title, &lv_font_montserrat_14, C_MUTED);
     lv_obj_set_pos(t, 12, 10);
+
+    lv_obj_t *b = label(scr, "--%", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -12, 10);
+    if (s_batt_count < BATT_MAX_SCREENS) {
+        s_batt_label[s_batt_count++] = b;
+    }
     return scr;
+}
+
+// 一次更新所有页面的电量。最宽的内容是 "100%"(35px),右对齐到 x=228,所以它占
+// x=193..228;最长的标题 "STACKBEAR RECORDER" 到 x=185,两者不重叠。
+static void battery_refresh(void)
+{
+    const int soc = bsp_battery_soc();
+    for (int i = 0; i < s_batt_count; i++) {
+        if (soc < 0) {
+            lv_label_set_text(s_batt_label[i], "--%");
+        } else {
+            lv_label_set_text_fmt(s_batt_label[i], "%d%%", soc);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +401,6 @@ static void page_move(list_page_t *p, int delta, sb_screen_t screen)
 static lv_obj_t *s_home_scr;
 static lv_obj_t *s_home_state;
 static lv_obj_t *s_home_sub;
-static lv_obj_t *s_home_batt;
 static lv_obj_t *s_home_seg;
 static lv_obj_t *s_home_sent;
 static lv_obj_t *s_home_drop;
@@ -390,9 +417,7 @@ static int s_home_cursor;
 
 static void build_home(void)
 {
-    s_home_scr = base_screen("STACKBEAR RECORDER");
-    s_home_batt = label(s_home_scr, "--%", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(s_home_batt, LV_ALIGN_TOP_RIGHT, -12, 10);
+    s_home_scr = base_screen("STACKBEAR RECORDER");   // 右上角的电量由 base_screen 建
 
     lv_obj_t *c = card(s_home_scr, 12, 44, 216, 124, C_CARD);
     s_home_state = label(c, "STARTING", &lv_font_montserrat_20, C_TEXT);
@@ -848,14 +873,7 @@ static void refresh(lv_timer_t *t)
         lv_label_set_text(s_home_state, st);
         lv_obj_set_style_text_color(s_home_state, lv_color_hex(color), 0);
     }
-    const int soc = bsp_battery_soc();
-    if (s_home_batt) {
-        if (soc < 0) {
-            lv_label_set_text(s_home_batt, "--%");
-        } else {
-            lv_label_set_text_fmt(s_home_batt, "%d%%", soc);
-        }
-    }
+    battery_refresh();   // 所有页面右上角的电量
     if (s_home_sub) {
         lv_label_set_text(s_home_sub,
                           (sb_net_state() == SB_NET_UP) ? "uploading speech to cloud"
