@@ -46,52 +46,61 @@
 
 ```text
 HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
- └ STATUS       分组菜单;每行右侧带一行摘要
-     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+                 + 两行可选动作:Stop recording(红)/ Settings
+ └ SETTINGS     分组菜单(即原来的 STATUS)
      ├ RECORDER  Recording / Segments / Sent / Dropped
-     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
-     └ HELP      按键说明,按页面分组,用 UP/DOWN 滚动
+     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     └ HELP      只讲两条看不出来的手势
 ```
 
-按键语义逐页统一。"轻点"指一次按下并抬起;不设双击手势,因为按键组件会把间隔小于
-短按窗口(本板 180ms)的连按合并成一次多击,那会让"按两次"的含义取决于用户按得
-多快。录音是会话级破坏性操作,只绑定长按:
+现在每个屏幕都是"选中 + 确认":UP/DOWN 移动高亮,OK 执行高亮那一行。这个手势在
+HOME(两行)、SETTINGS 和各个子页完全一致,于是只剩两条**屏幕本身教不出来**的手势
+需要说明 —— 那正是 HELP 里写的东西。"轻点"指一次按下并抬起;不设双击手势,因为按键
+组件会把间隔小于短按窗口(本板 180ms)的连按合并成一次多击,那会让"按两次"的含义
+取决于用户按得多快:
 
 | 页面 | UP 轻点 | DOWN 轻点 | OK 轻点 | UP 长按 | DOWN 长按 | OK 长按 |
 | --- | --- | --- | --- | --- | --- | --- |
-| HOME | 进 Status | 进 Status | 软暂停 / 继续 | 开始 / 停止录音 | — | 进配网 |
-| STATUS | 光标上移 | 光标下移 | 进入子页 | — | 返回 HOME | 进配网 |
-| NETWORK / RECORDER | 光标上移 | 光标下移 | —(纯展示) | — | 返回 STATUS | 进配网 |
-| DEVICE | 光标上移 | 光标下移 | 执行选中动作(仅 `Check for update` 行) | — | 返回 STATUS | 进配网 |
-| STORAGE | 光标上移 | 光标下移 | 切换选中设置(仅 `Cache` 与 `Size`) | — | 返回 STATUS | 进配网 |
-| HELP | 向上滚动 | 向下滚动 | — | — | 返回 STATUS | 进配网 |
+| HOME | 光标上移 | 光标下移 | 执行选中行:开始/停止录音,或进入 SETTINGS | 开始 / 停止录音(快捷键) | — | 进配网 |
+| SETTINGS | 光标上移 | 光标下移 | 进入子页 | — | 返回 HOME | 进配网 |
+| RECORDER / NETWORK | 光标上移 | 光标下移 | —(纯展示) | — | 返回 SETTINGS | 进配网 |
+| STORAGE | 光标上移 | 光标下移 | 切换选中设置(仅 `Cache` 与 `Size`) | — | 返回 SETTINGS | 进配网 |
+| DEVICE | 光标上移 | 光标下移 | 执行选中动作(仅 `Check for update` 行) | — | 返回 SETTINGS | 进配网 |
+| HELP | — | — | — | — | 返回 SETTINGS | 进配网 |
 | SETUP(配网) | — | — | — | — | — | 取消并返回 |
 
-无论连按多快,每次轻点都只移动一格。对 OK 有反应的行,其名称用强调色标出,其余为
-只读。列表页刻意不绑定录音开关,避免浏览菜单时误停会话。配网页是模态,屏幕上直接
-写明(`UP/DOWN off, hold OK to exit`)。聚合状态(融合凭据、链路、暂停、上行四层
-判断)只在 HOME 出现,子页不重复;Wi-Fi 与 Uplink 分列,因为"WiFi 通"并不等于
-"能上传"。
+无论连按多快,每次轻点都只移动一格。SETTINGS 上对 OK 有反应的行用强调色标出,其余
+只读;HOME 只强调"破坏性"那一行:停止录音是红色(它会结束会话并封文件),Settings 是
+强调色。第一行的文字跟着状态走 —— 暂停时写 `Start recording`,始终说的是"按下去会
+怎样",而不是"现在是什么状态"。HOME 一进来高亮就停在那一行。长按 UP 是同一个
+开始/停止动作的快捷键,与高亮停在哪一行无关;列表页仍然不绑定录音开关,避免浏览
+菜单时误停会话。配网页是模态,屏幕上直接写明(`UP/DOWN off, hold OK to exit`)。
+聚合状态(融合凭据、链路、暂停、上行四层判断)只在 HOME 出现,子页不重复;
+Wi-Fi 与 Uplink 分列,因为"WiFi 通"并不等于"能上传"。
 
 ### 列表滚动与按键说明页
 
 列表按**虚拟窗口**渲染:页面只声明条目数,屏幕上放得下几行就只创建几个行槽,
 滚动时把这些槽重新指向条目的另一段。对象数由屏幕高度决定,不随条目增长,所以
-以后往 NETWORK / RECORDER / DEVICE / STORAGE 里加信息不会撑大 LVGL 内存 ——
+以后往 RECORDER / NETWORK / STORAGE / DEVICE 里加信息不会撑大 LVGL 内存 ——
 加出来只是可滚动。右侧那条细滚动条只在页面确实超屏时才出现。现有每个页面都不超过
 7 行(正好一屏),所以除了新增的 HELP 行,外观没有任何变化。
 
-HELP 回答的是新用户真正的问题——"**在这个屏幕上**我能按什么",所以它按页面分组
-而不是按按键分组。按页面分组要写的内容超过一屏(32 行、512px 文字塞进 262px
-窗口),因此它是一整页像素滚动:UP/DOWN 每次滚一行,滚动条跟随位置。文案是按
-真实 Montserrat 14 字体度量过的,最长一行 210px,落在 216px 文本列内,不会折行
-或被裁掉。
+早先的 HELP 按页面分组,写了 32 行 —— 滚动能力就是为它加的。等每个屏幕都变成
+"选中 + 确认"之后,那些内容大多只是在复述高亮已经说明的事,于是 HELP 只剩两行:
+`Hold UP: Start/Stop recording` 与 `Hold OK: Wi-Fi hotspot setup`,一屏放得下,
+不再需要滚动。虚拟窗口机制留在列表里(它才是"页面加内容也不涨内存"的那部分);
+`main/sb_scroll.h` 是纯逻辑并有主机测试(`tests/test_sb_scroll.c`),覆盖最容易
+写错的边界:顶部/底部越界、条目少于可视行、空列表。
 
-窗口算术(`main/sb_scroll.h`)是纯逻辑并有主机测试(`tests/test_sb_scroll.c`),
-覆盖最容易写错的边界:顶部/底部越界、条目少于可视行、视口高度为 0、空列表。真实
-控件行为另外验证过:用 LVGL 9.6 编译**真实的** `sb_ui.c` 并驱动窗口,其中包含一个
-刻意构造的 12 条目页面,因为现有页面都到不了滚动路径。
+DEVICE 的取值不会越出自己的那一列。`Slot` 显示 `A`/`B`,不用内部的 `ota_0`/`ota_1`
+(字母就是 OTA 切换的那两个槽);`Branch` 未选中时显示以 `...` 结尾的前缀,把光标停在
+该行才开始走马灯,整串分支名会绕环滚动,字符逐个经过最左边,每个字符都能看到。前缀
+长度由 `Branch` 这个 Key 自身的宽度算出(`main/sb_text.c` 的 `sb_text_fit_ellipsis`),
+所以截断后的值绝不会爬到旁边的 Key 上;同一条路径也给过长的 OTA 失败原因收口。
+`Check for update` 不需要再写 `press OK`:它的名字已经用链接色画出来了。
 
 ## 排查出来的工程结论
 
@@ -142,7 +151,7 @@ HELP 回答的是新用户真正的问题——"**在这个屏幕上**我能按�
 
 可主机测试的逻辑都刻意从 LVGL/ESP-IDF 代码里剥离,由 `tests/test_sb_*.c` 覆盖:
 分帧(`sb_proto`)、VAD(`sb_vad`)、编解码(`sb_adpcm`)、离线槽位(`sb_cache_slot`)、
-清单解析(`sb_json`)、页面层级(`sb_nav`)、列表与 Help 的滚动窗口(`sb_scroll`)。
+清单解析(`sb_json`)、页面层级(`sb_nav`)、列表滚动窗口(`sb_scroll`)、按宽度截断与走马灯(`sb_text`)。
 
 ## 界面设计说明(taste 规范)
 
@@ -314,7 +323,7 @@ worker 支持音频的池子里。
 ```text
 Build:        PASS  (GitHub Actions,ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto、sb_vad、sb_adpcm、sb_cache_slot、sb_json、sb_nav、
-                     sb_scroll(列表窗口 + Help 像素滚动)、
+                     sb_scroll(列表窗口)、sb_text(截断 / 走马灯)、
                      cloud 协议/adpcm/providers/server/autotranscribe/firmware、
                      仓库检查)
 Device tests: 核心链路 PASS

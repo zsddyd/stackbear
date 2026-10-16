@@ -73,27 +73,3 @@ static inline int sb_scroll_move(sb_scroll_t *s, int delta)
     sb_scroll_follow(s);
     return s->cursor;
 }
-
-// 该条目当前是否落在可视区内(供绘制方决定画不画)。
-static inline int sb_scroll_visible_index(const sb_scroll_t *s, int index)
-{
-    const int v = (s->visible > 0) ? s->visible : s->count;
-    return index >= s->scroll && index < s->scroll + v;
-}
-
-// 自由内容(如 Help 页的文字)按像素滚动:把像素偏移夹进 [0, content - view]。
-// 与条目滚动分开,因为 Help 每行高度不同,按像素更直接。
-static inline int sb_scroll_clamp_px(int offset, int content_h, int view_h)
-{
-    if (view_h <= 0) {
-        return 0;
-    }
-    const int maxo = content_h - view_h;
-    if (maxo <= 0) {
-        return 0;   // 内容比视口短,不滚
-    }
-    if (offset < 0) {
-        return 0;
-    }
-    return offset > maxo ? maxo : offset;
-}

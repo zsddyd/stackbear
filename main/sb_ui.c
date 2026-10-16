@@ -1,7 +1,8 @@
 // main/sb_ui.c —— 应用界面。刻意区别于基线 demo 的"像素菜单":深色底 + 圆角卡片 +
 // 单一主状态,电量固定右上角。
 //
-// 结构:HOME 独占聚合状态卡;STATUS 是分组菜单;四个子页各讲一层信息。
+// 结构:HOME 独占聚合状态卡,并在下方放两行可选动作(开始/停止录音、进设置);
+// SETTINGS 是分组菜单;四个子页 + HELP 各讲一层信息。
 // 所有列表页共用同一个 list_page_t + 通用刷新,避免每页重复样板代码。
 #include "sb_ui.h"
 
@@ -17,6 +18,7 @@
 #include "sb_ota.h"
 #include "sb_recorder.h"
 #include "sb_scroll.h"
+#include "sb_text.h"
 #include "sb_uplink.h"
 #include "sb_version.h"
 
@@ -30,6 +32,10 @@
 #define C_WARN    0xE8A33D
 #define C_BAD     0xE0524A
 #define C_ACCENT  0x3B82F6
+
+// 破坏性动作的强调色。单独一个名字,是为了让"红色 = 会中断录音"这条约定只有
+// 一处定义 —— 换配色时不会漏掉某个页面。
+#define C_DANGER  C_BAD
 
 // 一屏能放下的行数由几何决定:最后一行的底边必须落在屏幕底部圆角之上。这是
 // **可视窗口**的大小,不是"页面条目上限"——条目可以更多,超出的部分交给
@@ -372,30 +378,99 @@ static lv_obj_t *s_home_seg;
 static lv_obj_t *s_home_sent;
 static lv_obj_t *s_home_drop;
 
+// HOME 也要能选东西(Stop / Settings),所以它复用同一套"行 + 高亮"模型。区别只有
+// 一处:它固定两行、排在计数器卡片下面,且可操作行的名称用红色(危险)/强调色(普通)
+// 区分 —— 表格化的列表用不上这种"这一行是危险动作"的强调。
+#define HOME_ROW_Y0 240   // 计数器卡片下方;末行底边 304,仍在底部圆角之内
+#define HOME_ROWS   2
+
+static lv_obj_t *s_home_sel;
+static lv_obj_t *s_home_row_name[HOME_ROWS];
+static int s_home_cursor;
+
 static void build_home(void)
 {
     s_home_scr = base_screen("STACKBEAR RECORDER");
     s_home_batt = label(s_home_scr, "--%", &lv_font_montserrat_14, C_TEXT);
     lv_obj_align(s_home_batt, LV_ALIGN_TOP_RIGHT, -12, 10);
 
-    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 132, C_CARD);
+    lv_obj_t *c = card(s_home_scr, 12, 44, 216, 124, C_CARD);
     s_home_state = label(c, "STARTING", &lv_font_montserrat_20, C_TEXT);
-    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 42);
+    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 34);
     s_home_sub = label(c, "", &lv_font_montserrat_14, C_MUTED);
     lv_label_set_long_mode(s_home_sub, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_home_sub, 196);
     lv_obj_set_style_text_align(s_home_sub, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -12);
 
     static const char *caps[3] = {"SEG", "SENT", "DROP"};
     lv_obj_t **vals[3] = {&s_home_seg, &s_home_sent, &s_home_drop};
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *k = card(s_home_scr, 12 + i * 74, 194, 68, 62, C_CARD);
+        lv_obj_t *k = card(s_home_scr, 12 + i * 74, 178, 68, 56, C_CARD);
         label(k, caps[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_align(lv_obj_get_child(k, 0), LV_ALIGN_TOP_MID, 0, 8);
+        lv_obj_align(lv_obj_get_child(k, 0), LV_ALIGN_TOP_MID, 0, 6);
         *vals[i] = label(k, "0", &lv_font_montserrat_14, C_TEXT);
-        lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_MID, 0, -8);
     }
+
+    // 两行可选动作。和高亮/标签的层次一样:底色 -> 高亮 -> 标签,标签挂屏幕才盖得住
+    // 高亮。
+    // 第一行的动词随录音状态变(Start / Stop),文字在 refresh_home_row() 里更新;
+    // 这里只建对象与配色。红色只给"会打断录音"的那一行。
+    static const char *names[HOME_ROWS] = {"Start recording", "Settings"};
+    for (int i = 0; i < HOME_ROWS; i++) {
+        (void)row_bg(s_home_scr, HOME_ROW_Y0 + i * ROW_PITCH);
+    }
+    s_home_sel = lv_obj_create(s_home_scr);
+    lv_obj_remove_flag(s_home_sel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_home_sel, ROW_X, HOME_ROW_Y0);
+    lv_obj_set_size(s_home_sel, ROW_W, ROW_H);
+    lv_obj_set_style_radius(s_home_sel, 10, 0);
+    lv_obj_set_style_border_width(s_home_sel, 0, 0);
+    lv_obj_set_style_pad_all(s_home_sel, 0, 0);
+    lv_obj_set_style_bg_color(s_home_sel, lv_color_hex(C_SEL), 0);
+    for (int i = 0; i < HOME_ROWS; i++) {
+        const int y_c = HOME_ROW_Y0 + i * ROW_PITCH + ROW_H / 2;
+        s_home_row_name[i] = label(s_home_scr, names[i], &lv_font_montserrat_14,
+                                   i == 0 ? C_DANGER : C_ACCENT);
+        lv_obj_align(s_home_row_name[i], LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+    }
+    s_home_cursor = 0;
+}
+
+// HOME 的光标滑动,与列表页同一个做法(从动画当前位置重设,连按不堆积)。
+static void home_move(int delta)
+{
+    const int before = s_home_cursor;
+    s_home_cursor += delta;
+    if (s_home_cursor < 0) {
+        s_home_cursor = 0;
+    }
+    if (s_home_cursor >= HOME_ROWS) {
+        s_home_cursor = HOME_ROWS - 1;
+    }
+    if (s_home_cursor == before || s_home_sel == NULL) {
+        return;
+    }
+    const int32_t target = HOME_ROW_Y0 + s_home_cursor * ROW_PITCH;
+    const int32_t from = lv_obj_get_y(s_home_sel);
+    lv_anim_delete(s_home_sel, sel_set_y);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_home_sel);
+    lv_anim_set_exec_cb(&a, sel_set_y);
+    lv_anim_set_values(&a, from, target);
+    lv_anim_set_duration(&a, SEL_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+// HOME 当前选中的动作。main 只问"用户选了什么",不关心它是第几行 —— "哪一行是
+// 什么"仍然只在界面里定义一次。
+sb_home_action_t sb_ui_home_action(void)
+{
+    return s_home_cursor == 0 ? SB_HOME_STARTSTOP : SB_HOME_SETTINGS;
 }
 
 // HOME 的状态是【聚合结论】:融合凭据、WiFi 链路、暂停、上行四层判断。
@@ -474,121 +549,45 @@ static void build_provision(void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Help:按**页面**分组讲按键,而不是按按键分组。
+// Help:只讲**光看屏幕猜不出来**的两件事。
 //
-// 为什么按页面分组:新用户真正的问题是"我这个屏幕上该按什么"。按按键分组只能压成
-// "tap UP/DOWN = status or move cursor",就丢掉了"同一手势在不同页面效果不同"这
-// 件最关键的事。代价是内容比一屏长,于是这里用像素滚动(条目高度不等,按像素比按
-// 行更直接)。
+// 早先这里按页面分组写了三十多行,把 "tap UP/DOWN = move cursor"、"tap OK = 选中"
+// 也说了一遍。那些是看屏幕就能学会的(有高亮跟着动),写出来只是噪音,还把真正
+// 需要注意的两条埋在里头。现在同理心检查一遍:UP/DOWN 选中、OK 确认、长按 DOWN
+// 返回都符合直觉,不必写;只有"长按 UP 是开关录音"和"长按 OK 进配网"没有线索,
+// 这两条留在这里。
 //
-// 文案宽度是按真实字体量过的:文本列 216px,最长一行 210px,所以不折行也不裁字。
+// 文案宽度按真实字体量过:文本列 216px,两行分别 212px / 215px,不折行不裁字。
 // ---------------------------------------------------------------------------
 
-#define HELP_VIEW_Y   38
-#define HELP_VIEW_H   262   // 直到屏幕底边;圆角在内容之下,文字不会压到角上
+#define HELP_VIEW_Y   44
+#define HELP_VIEW_W   216
 
 static lv_obj_t *s_help_scr;
-static lv_obj_t *s_help_body;      // 承载整段文案的标签,靠移动它的 y 实现滚动
-static lv_obj_t *s_help_bar_track;
-static lv_obj_t *s_help_bar_thumb;
-static int s_help_h;               // 文案实际高度(建好后量一次)
-static int s_help_off;             // 当前像素偏移
+static lv_obj_t *s_help_body;
 
 static const char *const HELP_TEXT =
-    "HOME\n"
-    "  tap UP/DOWN  open Status\n"
-    "  tap OK  pause / resume\n"
-    "  hold UP  recording on / off\n"
-    "  hold OK  enter setup\n"
-    "\n"
-    "STATUS\n"
-    "  tap UP/DOWN  move cursor\n"
-    "  tap OK  open the blue row\n"
-    "  hold DOWN  back one level\n"
-    "  hold OK  enter setup\n"
-    "\n"
-    "NETWORK, RECORDER\n"
-    "  tap UP/DOWN  move cursor\n"
-    "  hold DOWN  back one level\n"
-    "\n"
-    "DEVICE\n"
-    "  tap UP/DOWN  move cursor\n"
-    "  tap OK  check for update\n"
-    "  hold DOWN  back one level\n"
-    "\n"
-    "STORAGE\n"
-    "  tap UP/DOWN  move cursor\n"
-    "  tap OK  toggle Cache / Size\n"
-    "  hold DOWN  back one level\n"
-    "\n"
-    "SETUP MODE\n"
-    "  hold OK  cancel\n"
-    "\n"
-    "tap  = press and release\n"
-    "hold = press and keep held\n"
-    "blue rows respond to OK";
+    "Hold UP: Start/Stop recording\n"
+    "Hold OK: Wi-Fi hotspot setup";
 
 static void build_help(void)
 {
     s_help_scr = base_screen("HELP");
 
-    // 裁剪容器:文案比它高时只露出窗口内的一段。容器本身不滚(整页手动滚),
-    // 避免两种滚动互相打架。
-    lv_obj_t *view = lv_obj_create(s_help_scr);
-    lv_obj_remove_flag(view, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(view, 12, HELP_VIEW_Y);
-    lv_obj_set_size(view, 216, HELP_VIEW_H);
-    lv_obj_set_style_radius(view, 0, 0);
-    lv_obj_set_style_border_width(view, 0, 0);
-    lv_obj_set_style_pad_all(view, 0, 0);
-    lv_obj_set_style_bg_opa(view, LV_OPA_TRANSP, 0);
-
-    s_help_body = label(view, HELP_TEXT, &lv_font_montserrat_14, C_TEXT);
-    lv_label_set_long_mode(s_help_body, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_help_body, 216);
-    lv_obj_set_pos(s_help_body, 0, 0);
-    lv_obj_update_layout(s_help_scr);
-    s_help_h = lv_obj_get_height(s_help_body);
-    s_help_off = 0;
-
-    bar_create(s_help_scr, C_CARD, C_SEL, HELP_VIEW_H, &s_help_bar_track, &s_help_bar_thumb);
-    bar_apply(s_help_bar_track, s_help_bar_thumb, HELP_VIEW_H, 0, s_help_h, HELP_VIEW_H);
-}
-
-// 一行按键说明的滚动是**像素**口径:上/下各滚一行的量,手感与列表页"移一行"一致,
-// 又不至于慢慢挪。夹边界交给 sb_scroll_clamp_px(它同时处理"内容比视口短")。
-#define HELP_STEP 34
-
-static void help_scroll(int delta)
-{
-    if (s_help_body == NULL) {
-        return;
-    }
-    const int before = s_help_off;
-    s_help_off = sb_scroll_clamp_px(s_help_off + delta * HELP_STEP, s_help_h, HELP_VIEW_H);
-    if (s_help_off == before) {
-        return;
-    }
-    lv_obj_set_y(s_help_body, -s_help_off);
-    bar_apply(s_help_bar_track, s_help_bar_thumb, HELP_VIEW_H, s_help_off, s_help_h,
-              HELP_VIEW_H);
-}
-
-// 从菜单行进入 Help 时把窗口归零,免得上次看到一半的位置留着。
-static void help_reset(void)
-{
-    if (s_help_body == NULL) {
-        return;
-    }
-    s_help_off = 0;
-    lv_obj_set_y(s_help_body, 0);
-    bar_apply(s_help_bar_track, s_help_bar_thumb, HELP_VIEW_H, 0, s_help_h, HELP_VIEW_H);
+    // 两行文案一屏放得下,所以这里没有滚动、没有滚动条 —— 只有一张卡片。曾经需要
+    // 整页滚动是因为文案有三十多行;把"看屏幕就能学会的"删掉之后就不需要了。
+    // 说明放在卡片里(而不是直接铺在屏幕上),是为了与其它页面共用同一套视觉语言。
+    lv_obj_t *c = card(s_help_scr, ROW_X, HELP_VIEW_Y, ROW_W, 84, C_CARD);
+    s_help_body = label(c, HELP_TEXT, &lv_font_montserrat_14, C_TEXT);
+    lv_obj_set_width(s_help_body, HELP_VIEW_W - 28);
+    lv_obj_align(s_help_body, LV_ALIGN_LEFT_MID, 14, 0);
 }
 
 static void build_pages(void)
 {
-    static const char *menu_names[] = {"Network", "Recorder", "Device", "Storage", "Help"};
-    page_init(&s_menu, SB_NAV_MENU, "STATUS", menu_names, 5);
+    // 顺序:Recorder / Network / Storage / Device / Help —— 最常看的排最前。
+    static const char *menu_names[] = {"Recorder", "Network", "Storage", "Device", "Help"};
+    page_init(&s_menu, SB_NAV_MENU, "SETTINGS", menu_names, 5);
 
     // 页面行数必须与 sb_nav(层级与光标边界的唯一事实来源)一致,否则光标会
     // 停到不存在的行、或漏掉最后一行。放在这里用编译期断言钉住。
@@ -627,25 +626,27 @@ static void refresh_menu(void)
 {
     const sb_config_t *cfg = sb_config_get();
     // 菜单右侧摘要:不进子页也能看出关键状态。
-    if (!cfg->provisioned) {
-        page_set(&s_menu, 0, "not set up", C_WARN);
-    } else if (sb_net_state() == SB_NET_UP) {
-        page_set(&s_menu, 0, cfg->ssid, C_OK);
-    } else if (sb_net_state() == SB_NET_CONNECTING) {
-        page_set(&s_menu, 0, "connecting", C_WARN);
-    } else if (sb_net_reconnecting()) {
-        page_set(&s_menu, 0, "reconnecting", C_WARN);
-    } else {
-        page_set(&s_menu, 0, "down", C_BAD);
-    }
-    page_set(&s_menu, 1, sb_recorder_paused() ? "paused" : "active",
+    page_set(&s_menu, SB_MENU_RECORDER, sb_recorder_paused() ? "paused" : "active",
              sb_recorder_paused() ? C_WARN : C_OK);
-    page_set(&s_menu, 2, sb_version_short(), C_TEXT);
-    if (cfg->cache_enabled) {
-        page_set_fmt(&s_menu, 3, C_TEXT, "on %u MB", (unsigned)cfg->cache_limit_mb);
+    if (!cfg->provisioned) {
+        page_set(&s_menu, SB_MENU_NETWORK, "not set up", C_WARN);
+    } else if (sb_net_state() == SB_NET_UP) {
+        page_set(&s_menu, SB_MENU_NETWORK, cfg->ssid, C_OK);
+    } else if (sb_net_state() == SB_NET_CONNECTING) {
+        page_set(&s_menu, SB_MENU_NETWORK, "connecting", C_WARN);
+    } else if (sb_net_reconnecting()) {
+        page_set(&s_menu, SB_MENU_NETWORK, "reconnecting", C_WARN);
     } else {
-        page_set(&s_menu, 3, "off", C_MUTED);
+        page_set(&s_menu, SB_MENU_NETWORK, "down", C_BAD);
     }
+    if (cfg->cache_enabled) {
+        page_set_fmt(&s_menu, SB_MENU_STORAGE, C_TEXT, "on %u MB",
+                     (unsigned)cfg->cache_limit_mb);
+    } else {
+        page_set(&s_menu, SB_MENU_STORAGE, "off", C_MUTED);
+    }
+    page_set(&s_menu, SB_MENU_DEVICE, sb_version_short(), C_TEXT);
+    page_set(&s_menu, SB_MENU_HELP, "key guide", C_TEXT);
 }
 
 static void refresh_net(void)
@@ -685,22 +686,107 @@ static void refresh_rec(void)
                  "%lu", (unsigned long)sb_uplink_frames_dropped());
 }
 
+// DEVICE 页各行的下标。与 sb_nav 里的 DEV_ROW_* 一一对应,写在这边是为了让
+// refresh/branch 滚动都能用名字而不是魔法数字。
+#define DEV_ROW_DEV_ID  0
+#define DEV_ROW_FW      1
+#define DEV_ROW_SLOT    2
+#define DEV_ROW_COMMIT  3
+#define DEV_ROW_BRANCH  4
+#define DEV_ROW_BUILT   5
+#define DEV_ROW_OTA     6
+
+// 行槽的取值宽度。值标签右边缘固定在 x=218,所以"左侧 Key 之后还剩多少像素"是个
+// 常量,但每个 Key 不一样宽,分别算:
+//   - Branch 未选中:取值不能盖到 "Branch" 这个名字上。它到 x=75,留 10px 空隙 →
+//     值从 x=85 起,可用 218-85 = 133px。实测 "feature/always-..." 是 118px,正好。
+#define DEV_VALUE_SAFE_PX 132
+//   - Check for update 行的取值:该 Key 最长(到 x=149,留 6px 空隙) → 218-155 = 63px。
+#define DEV_VALUE_ROW_PX  63
+
+static int text_px(const char *s, void *ctx)
+{
+    (void)ctx;
+    lv_point_t size;
+    lv_text_get_size(&size, s, &lv_font_montserrat_14, 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    return (int)size.x;
+}
+
+// slot:运行槽直接告诉用户"我在 A 还是 B",比内部名 ota_0/ota_1 有用 —— 用户
+// 关心的是"当前跑的是哪个槽",而 A/B 与 OTA 的槽切换是同一件事的两种说法。
+static const char *slot_letter(void)
+{
+    const char *slot = sb_version_slot();
+    if (slot[0] == 'o' && slot[4] == '1') {
+        return "B";   // ota_1
+    }
+    if (slot[0] == 'o' && slot[4] == '0') {
+        return "A";   // ota_0
+    }
+    return slot;      // factory / ? 之类原样显示
+}
+
+// Branch 的跑马灯偏移。只在光标停在 Branch 行时前进;离开时归零 —— 所以未选中
+// Branch 永远只显示安全长度前缀,不会自己动起来。
+static int s_branch_off;
+
 static void refresh_dev(void)
 {
-    page_set(&s_dev, 0, sb_config_get()->dev_id, C_TEXT);
-    page_set(&s_dev, 1, sb_version_short(), C_TEXT);
-    page_set(&s_dev, 2, sb_version_slot(), C_TEXT);
-    page_set(&s_dev, 3, SB_GIT_COMMIT, C_TEXT);
-    page_set(&s_dev, 4, SB_GIT_BRANCH, C_TEXT);
-    page_set(&s_dev, 5, SB_BUILD_TIME, C_MUTED);
-    // 可操作行用强调色,并显示 OTA 进度/结果。
+    char buf[64];
+    page_set(&s_dev, DEV_ROW_DEV_ID, sb_config_get()->dev_id, C_TEXT);
+    page_set(&s_dev, DEV_ROW_FW, sb_version_short(), C_TEXT);
+    page_set(&s_dev, DEV_ROW_SLOT, slot_letter(), C_TEXT);
+    page_set(&s_dev, DEV_ROW_COMMIT, SB_GIT_COMMIT, C_TEXT);
+
+    if (s_dev.win.cursor == DEV_ROW_BRANCH) {
+        // 选中:Branch 太长时循环滚动,不截断,让用户看全。
+        if (text_px(SB_GIT_BRANCH, NULL) <= DEV_VALUE_SAFE_PX) {
+            s_branch_off = 0;
+            page_set(&s_dev, DEV_ROW_BRANCH, SB_GIT_BRANCH, C_TEXT);
+        } else {
+            sb_text_marquee(buf, sizeof buf, SB_GIT_BRANCH, s_branch_off,
+                            DEV_VALUE_SAFE_PX, text_px, NULL);
+            s_branch_off++;
+            page_set(&s_dev, DEV_ROW_BRANCH, buf, C_ACCENT);
+        }
+    } else {
+        // 未选中:只显示安全长度,后接 ... 表示"还有内容"。安全长度保证不会盖到
+        // 左边的 "Branch" 名字(见 DEV_VALUE_SAFE_PX)。
+        s_branch_off = 0;
+        sb_text_fit_ellipsis(buf, sizeof buf, SB_GIT_BRANCH, DEV_VALUE_SAFE_PX,
+                             text_px, NULL);
+        page_set(&s_dev, DEV_ROW_BRANCH, buf, C_TEXT);
+    }
+
+    page_set(&s_dev, DEV_ROW_BUILT, SB_BUILD_TIME, C_MUTED);
+
+    // 可操作行用强调色(=超链接色),不写 "press OK":整行名字已经是蓝色,再写
+    // 一次反而啰嗦。空闲时右边留空,只显示 OTA 的进度/结果。
+    //
+    // 失败原因可能很长("checksum mismatch after download" 有 267px),按行的取值
+    // 宽度截断并加 ...,否则会盖到左边的 "Check for update" 上。
     const sb_ota_state_t st = sb_ota_state();
     switch (st) {
-    case SB_OTA_CHECKING:    page_set(&s_dev, 6, "checking...", C_ACCENT); break;
-    case SB_OTA_DOWNLOADING: page_set(&s_dev, 6, sb_ota_message(), C_ACCENT); break;
-    case SB_OTA_UP_TO_DATE:  page_set(&s_dev, 6, "up to date", C_OK); break;
-    case SB_OTA_FAILED:      page_set(&s_dev, 6, sb_ota_message(), C_BAD); break;
-    default:                 page_set(&s_dev, 6, "press OK", C_ACCENT); break;
+    case SB_OTA_CHECKING:
+        page_set(&s_dev, DEV_ROW_OTA, "checking...", C_ACCENT);
+        break;
+    case SB_OTA_DOWNLOADING:
+        sb_text_fit_ellipsis(buf, sizeof buf, sb_ota_message(), DEV_VALUE_ROW_PX,
+                             text_px, NULL);
+        page_set(&s_dev, DEV_ROW_OTA, buf, C_ACCENT);
+        break;
+    case SB_OTA_UP_TO_DATE:
+        page_set(&s_dev, DEV_ROW_OTA, "up to date", C_OK);
+        break;
+    case SB_OTA_FAILED:
+        sb_text_fit_ellipsis(buf, sizeof buf, sb_ota_message(), DEV_VALUE_ROW_PX,
+                             text_px, NULL);
+        page_set(&s_dev, DEV_ROW_OTA, buf, C_BAD);
+        break;
+    default:
+        page_set(&s_dev, DEV_ROW_OTA, "", C_TEXT);
+        break;
     }
 }
 
@@ -776,11 +862,24 @@ static void refresh(lv_timer_t *t)
     if (s_home_drop) {
         lv_label_set_text_fmt(s_home_drop, "%lu", (unsigned long)sb_uplink_frames_dropped());
     }
+    // HOME 第一行的动词跟着录音状态走:暂停时写 "Start recording",在录时写
+    // "Stop recording"。用户不需要知道"哪个是当前状态",只需要知道"按下去会怎样"。
+    if (s_home_row_name[0] != NULL) {
+        const bool paused = sb_recorder_paused();
+        lv_label_set_text(s_home_row_name[0],
+                          paused ? "Start recording" : "Stop recording");
+        // 只有"停止"会打断会话,所以只有它用红色;开始录音用强调色即可。
+        lv_obj_set_style_text_color(s_home_row_name[0],
+                                    lv_color_hex(paused ? C_ACCENT : C_DANGER), 0);
+    }
     refresh_menu();
     refresh_net();
     refresh_rec();
     refresh_dev();
     refresh_stor();
+
+    // Branch 的跑马灯只在该行被选中时前进。refresh_dev() 已经按当前光标决定画什么
+    // (选中=滚动,未选中=安全前缀),所以这里不需要额外判断。
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +907,7 @@ void sb_ui_show(sb_screen_t screen)
     case SB_SCREEN_REC:     lv_screen_load(s_rec.scr); break;
     case SB_SCREEN_DEV:     lv_screen_load(s_dev.scr); break;
     case SB_SCREEN_STORAGE: lv_screen_load(s_stor.scr); break;
-    case SB_SCREEN_HELP:    help_reset(); lv_screen_load(s_help_scr); break;
+    case SB_SCREEN_HELP:    lv_screen_load(s_help_scr); break;
     case SB_SCREEN_PROVISION: lv_screen_load(s_prov_scr); break;
     default:                lv_screen_load(s_home_scr); s_screen = SB_SCREEN_HOME; break;
     }
@@ -863,8 +962,8 @@ static sb_screen_t from_nav(sb_nav_page_t p)
 
 void sb_ui_move(int delta)
 {
-    if (s_screen == SB_SCREEN_HELP) {
-        help_scroll(delta);
+    if (s_screen == SB_SCREEN_HOME) {
+        home_move(delta);
         return;
     }
     list_page_t *p = current_page();
@@ -875,6 +974,9 @@ void sb_ui_move(int delta)
 
 bool sb_ui_row_actionable(void)
 {
+    if (s_screen == SB_SCREEN_HOME) {
+        return true;   // HOME 两行都能按 OK(停录音 / 进设置)
+    }
     // 可操作行的判断只有一处事实来源(sb_nav),界面不重复定义规则。页面身份在建页
     // 时已存进 list_page_t,这里直接用,不再从屏幕枚举反推一次。
     const list_page_t *p = current_page();
@@ -890,6 +992,14 @@ void sb_ui_activate(void)
     case SB_SCREEN_MENU:
         // 菜单行 -> 子页的映射由 sb_nav 决定,这里只负责跳转。
         sb_ui_show(from_nav(sb_nav_menu_target(s_menu.win.cursor)));
+        break;
+    case SB_SCREEN_HOME:
+        // HOME 第一行 = 开始/停止录音(会话级,与长按 UP 同一个动作);第二行进设置。
+        // 录音开关需要 main 里的 sb_uplink_end_session(),界面不直接碰会话,所以
+        // HOME 的 OK 由 main 处理(见 handle_input)。这里只处理"进设置"。
+        if (s_home_cursor != 0) {
+            sb_ui_show(SB_SCREEN_MENU);
+        }
         break;
     case SB_SCREEN_DEV:
         if (sb_nav_row_actionable(SB_NAV_DEV, s_dev.win.cursor) && !sb_ota_busy()) {

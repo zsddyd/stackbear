@@ -3,12 +3,13 @@
 // 页面层级(两层,任何页面长按 DOWN 逐级返回,长按 OK 全局进配网):
 //
 //   HOME            大状态卡(聚合结论)+ SEG/SENT/DROP
-//    └ STATUS       分组菜单,每行右侧带一行摘要
-//        ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+//                   + 两行可选动作:Stop recording(红)/ Settings
+//    └ SETTINGS     (原来的 STATUS)分组菜单,每行右侧带一行摘要
 //        ├ RECORDER  Recording / Segments / Sent / Dropped
-//        ├ DEVICE    Device ID / Firmware / Slot / Commit / Built / Check for update
-//        ├ STORAGE   Cache / Size / Used / Pending / Dropped + 说明
-//        └ HELP      按键说明(按页面分组),UP/DOWN 整页滚动
+//        ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+//        ├ STORAGE   Cache / Size / Used / Pending / Dropped
+//        ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+//        └ HELP      只讲长按 UP 与长按 OK 两条(其余靠高亮自解释)
 //
 // 设计取舍:HOME 独占那个"聚合状态"(它融合了凭据/链路/暂停/上行四层判断),
 // 子页只讲自己那一层,避免同一结论在多处重复;NETWORK 里 Wi-Fi 与 Uplink 分列,
@@ -41,6 +42,15 @@ sb_screen_t sb_ui_current(void);
 
 // 设置配网页展示的热点名(进入配网模式时调用)。
 void sb_ui_set_ap_name(const char *name);
+
+// HOME 页当前选中的动作。OK 在 HOME 上的含义由它决定:
+// 起点 = 开始/停止录音(会话级), - 设置 = 进入 SETTINGS。
+typedef enum {
+    SB_HOME_STARTSTOP = 0,   // "Start recording" / "Stop recording"
+    SB_HOME_SETTINGS,        // "Settings"
+} sb_home_action_t;
+
+sb_home_action_t sb_ui_home_action(void);
 
 // 列表页导航。由 main 的按键处理转发,光标与页面状态由本模块自己维护,
 // 上层不需要知道"第几行是哪一项"。

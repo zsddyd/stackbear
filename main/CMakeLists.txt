@@ -5,6 +5,7 @@ idf_component_register(
          "sb_cache_slot.c"
          "sb_json.c"
          "sb_nav.c"
+         "sb_text.c"
          "sb_version.c"
          "sb_ota.c"
          "sb_diag.c"
@@ -43,7 +44,7 @@ if(GIT_FOUND)
     string(STRIP "${SB_GIT_BRANCH}" SB_GIT_BRANCH)
 endif()
 string(TIMESTAMP SB_BUILD_TIME "%Y-%m-%d %H:%M UTC" UTC)
-set(SB_APP_VERSION "0.7.0")
+set(SB_APP_VERSION "0.7.1")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SB_GIT_COMMIT="${SB_GIT_COMMIT}"

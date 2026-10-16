@@ -48,11 +48,17 @@ static void test_parent_chain(void)
 
 static void test_menu_targets(void)
 {
-    CHECK(sb_nav_menu_target(SB_MENU_NETWORK) == SB_NAV_NET, "");
+    // 每行各自映射到它的子页,顺序由 sb_nav.h 的枚举决定(SETTINGS 页自上而下
+    // 是 Recorder / Network / Storage / Device / Help)。
     CHECK(sb_nav_menu_target(SB_MENU_RECORDER) == SB_NAV_REC, "");
-    CHECK(sb_nav_menu_target(SB_MENU_DEVICE) == SB_NAV_DEV, "");
+    CHECK(sb_nav_menu_target(SB_MENU_NETWORK) == SB_NAV_NET, "");
     CHECK(sb_nav_menu_target(SB_MENU_STORAGE) == SB_NAV_STORAGE, "");
+    CHECK(sb_nav_menu_target(SB_MENU_DEVICE) == SB_NAV_DEV, "");
     CHECK(sb_nav_menu_target(SB_MENU_HELP) == SB_NAV_HELP, "");
+    // 枚举顺序本身就是"页面上从上到下"的顺序,顺序错位会让 OK 进错页,所以把
+    // 数值也钉住。
+    CHECK(SB_MENU_RECORDER == 0 && SB_MENU_NETWORK == 1 && SB_MENU_STORAGE == 2 &&
+          SB_MENU_DEVICE == 3 && SB_MENU_HELP == 4, "menu order is the screen order");
     // 越界不能崩,也不能跳到意外的页。
     CHECK(sb_nav_menu_target(-1) == SB_NAV_MENU, "");
     CHECK(sb_nav_menu_target(SB_MENU_ROWS) == SB_NAV_MENU, "");

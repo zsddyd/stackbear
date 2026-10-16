@@ -123,11 +123,35 @@ static void handle_input(const input_event_t *in)
         return;  // 拿不到锁就不猜页面,丢弃这次按键,避免误路由
     }
     const sb_screen_t screen = sb_ui_current();
-    // Help 也是"上下键有作用"的页,只是它滚的是文字而不是光标,所以和列表页走同一
-    // 条分支(sb_ui_move 内部按页面分发)。漏掉它会让 Help 页上下键完全失灵。
+    // HOME 也有"选中 + 确认":UP/DOWN 在 Start/Stop 与 Settings 之间移光标,OK 执行
+    // 选中那一行。它不是列表页(没有滚动),所以单独一条分支。
+    //
+    // 注意长按 UP **不能**被这条分支吞掉:它是"开关录音"的快捷键,与选中行无关,
+    // 无论光标停在哪一行都必须生效(下面的 CLICK 分支只处理轻点)。
+    if (screen == SB_SCREEN_HOME) {
+        if (tap && (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN)) {
+            sb_ui_move(in->btn == BSP_BTN_DOWN ? 1 : -1);
+            bsp_lvgl_unlock();
+            return;
+        } else if (in->btn == BSP_BTN_OK && in->event == BSP_BTN_CLICK) {
+            if (sb_ui_home_action() == SB_HOME_SETTINGS) {
+                sb_ui_show(SB_SCREEN_MENU);
+            } else {
+                // 与长按 UP 同一个动作(会话级开始/停止),不是软暂停:按钮上写的就是
+                // "Start/Stop recording",点下去就该是那件事。
+                toggle_recording();
+            }
+            bsp_lvgl_unlock();
+            return;
+        }
+        bsp_lvgl_unlock();
+        // 其余(长按 UP 这个快捷键)落到下面的统一分支。长按 DOWN/OK 在上面已处理。
+    }
+    // 列表页(含 SETTINGS 菜单):UP/DOWN 移光标、OK 执行当前行。Help 是纯文字页,
+    // 上下键在那里没有作用,所以不在这里。
     const bool is_list = screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET ||
                          screen == SB_SCREEN_REC || screen == SB_SCREEN_DEV ||
-                         screen == SB_SCREEN_STORAGE || screen == SB_SCREEN_HELP;
+                         screen == SB_SCREEN_STORAGE;
     if (is_list) {
         // 列表页:UP/DOWN 每次轻点移动一格,OK 单击激活当前行。每一行是不是可操作
         // 由 UI 自己判断(见 sb_ui_row_actionable),上层不必知道"第几行是哪一项"。
@@ -151,16 +175,7 @@ static void handle_input(const input_event_t *in)
         toggle_recording();
         return;
     }
-    if (in->event != BSP_BTN_CLICK) {
-        return;
-    }
-    if (in->btn == BSP_BTN_OK) {
-        // OK 单击 = 软暂停 / 继续(保持会话不断)。
-        sb_recorder_set_paused(!sb_recorder_paused());
-    } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        // 主页上按上/下进入分组菜单(菜单与子页的语义在上面统一处理)。
-        ui_show_locked(SB_SCREEN_MENU);
-    }
+    // 其余在 HOME 上的动作都在上面按"选中 + 确认"处理完了。
 }
 
 static void toggle_recording(void)

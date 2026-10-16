@@ -10,7 +10,7 @@
 
 typedef enum {
     SB_NAV_HOME = 0,
-    SB_NAV_MENU,        // 分组菜单
+    SB_NAV_MENU,        // SETTINGS(分组菜单)
     SB_NAV_NET,         // NETWORK
     SB_NAV_REC,         // RECORDER
     SB_NAV_DEV,         // DEVICE
@@ -21,11 +21,12 @@ typedef enum {
 } sb_nav_page_t;
 
 // 分组菜单的行,顺序必须与 sb_ui.c 里的菜单文案一致。
+// 顺序按"最常看的排在前面"定:录音状态 → 网络 → 存储 → 设备 → 帮助。
 typedef enum {
-    SB_MENU_NETWORK = 0,
-    SB_MENU_RECORDER,
-    SB_MENU_DEVICE,
+    SB_MENU_RECORDER = 0,
+    SB_MENU_NETWORK,
     SB_MENU_STORAGE,
+    SB_MENU_DEVICE,
     SB_MENU_HELP,
     SB_MENU_ROWS
 } sb_menu_row_t;

@@ -58,10 +58,10 @@ sb_nav_page_t sb_nav_parent(sb_nav_page_t page)
 sb_nav_page_t sb_nav_menu_target(int row)
 {
     switch (row) {
-    case SB_MENU_NETWORK: return SB_NAV_NET;
     case SB_MENU_RECORDER: return SB_NAV_REC;
-    case SB_MENU_DEVICE: return SB_NAV_DEV;
+    case SB_MENU_NETWORK: return SB_NAV_NET;
     case SB_MENU_STORAGE: return SB_NAV_STORAGE;
+    case SB_MENU_DEVICE: return SB_NAV_DEV;
     case SB_MENU_HELP: return SB_NAV_HELP;
     default: return SB_NAV_MENU;
     }

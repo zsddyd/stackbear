@@ -51,34 +51,42 @@ session for later transcription.
 
 ```text
 HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
- └ STATUS       group menu; each row carries a summary on the right
-     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
+                 + two selectable rows: Stop recording (red) / Settings
+ └ SETTINGS     group menu (this used to be called STATUS)
      ├ RECORDER  Recording / Segments / Sent / Dropped
-     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
-     └ HELP      the key guide, grouped by page and scrolled with UP/DOWN
+     ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     └ HELP      the two gestures that are not self-evident
 ```
 
-Keys are uniform and per-page consistent. A "tap" is one press-and-release;
-there is no double-tap gesture, because the button component merges taps closer
-than its short-press window (180 ms here) into one multi-click sequence, which
-would make the meaning of "twice" depend on how fast the user pressed. Recording
-is a session-level destructive action, so it is bound to a long press only:
+Every screen is now select-and-confirm: UP/DOWN move the highlight, OK runs the
+highlighted row. That is the same gesture on HOME (two rows), SETTINGS and the
+sub-pages, so only two gestures remain that the screen cannot teach by itself —
+and those are what HELP lists. A "tap" is one press-and-release; there is no
+double-tap gesture, because the button component merges taps closer than its
+short-press window (180 ms here) into one multi-click sequence, which would make
+the meaning of "twice" depend on how fast the user pressed:
 
 | Page | UP tap | DOWN tap | OK tap | UP long | DOWN long | OK long |
 | --- | --- | --- | --- | --- | --- | --- |
-| HOME | enter Status | enter Status | soft pause/resume | start/stop recording | — | enter provisioning |
-| STATUS | cursor up | cursor down | open sub-page | — | back to HOME | enter provisioning |
-| NETWORK / RECORDER | cursor up | cursor down | — (read-only) | — | back to STATUS | enter provisioning |
-| DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to STATUS | enter provisioning |
-| STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to STATUS | enter provisioning |
-| HELP | scroll up | scroll down | — | — | back to STATUS | enter provisioning |
+| HOME | cursor up | cursor down | run the selected row: start/stop recording, or open SETTINGS | start/stop recording (shortcut) | — | enter provisioning |
+| SETTINGS | cursor up | cursor down | open sub-page | — | back to HOME | enter provisioning |
+| RECORDER / NETWORK | cursor up | cursor down | — (read-only) | — | back to SETTINGS | enter provisioning |
+| STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to SETTINGS | enter provisioning |
+| DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to SETTINGS | enter provisioning |
+| HELP | — | — | — | — | back to SETTINGS | enter provisioning |
 | SETUP (provisioning) | — | — | — | — | — | cancel and return |
 
-Taps always move one row each, however fast they are repeated. Rows that respond
-to OK show their name in the accent colour; the rest are read-only. Recording is
-deliberately not bound on list pages so that browsing cannot stop a session. The
-provisioning page is a modal and says so on screen (`UP/DOWN off, hold OK to
+Taps always move one row each, however fast they are repeated. On SETTINGS the
+rows that respond to OK show their name in the accent colour and the rest are
+read-only. HOME marks only the destructive row: `Stop recording` is red (it ends
+the session and closes the file) and `Settings` is accent; the first row is
+labelled `Start recording` while paused, so it always names what pressing it
+does. HOME starts with the highlight on that row. Long-press UP is the shortcut
+for the same start/stop action and works regardless of where the highlight sits;
+recording is still not bound on any list page, so browsing cannot stop a session.
+The provisioning page is a modal and says so on screen (`UP/DOWN off, hold OK to
 exit`). The aggregate state (which fuses credential, link, pause and uplink)
 lives only on HOME so no sub-page repeats it; Wi-Fi and Uplink are separate rows
 because a healthy Wi-Fi link does not imply uploads work.
@@ -89,25 +97,30 @@ Lists are drawn from a *virtual window*: a page declares how many items it has,
 but only the rows that fit on screen are created, and scrolling re-points those
 slots at a different slice of the item list. The object count is therefore fixed
 by the screen height and does not grow with the number of items, so adding
-information to NETWORK / RECORDER / DEVICE / STORAGE later cannot inflate LVGL
+information to RECORDER / NETWORK / STORAGE / DEVICE later cannot inflate LVGL
 memory — it just becomes scrollable. A slim scroll bar appears on the right only
 when a page actually overflows. Every shipped page has at most seven rows, which
 is exactly one screen, so nothing visible changed except the new HELP row.
 
-HELP answers the question a new user actually has — "what can I press on *this*
-screen?" — so it is grouped by page rather than by button. Grouping by page
-needs more lines than fit at once (32 lines, 512 px of text into a 262 px
-window), which is why it is a full-screen pixel-scrolled page: UP/DOWN scroll it
-one line at a time and a scroll bar tracks the position. The copy is measured
-against the real Montserrat 14 metrics; the longest line is 210 px inside the
-216 px text column, so no line wraps or clips.
+An earlier HELP was grouped by page and ran to 32 lines, which is why the
+scrolling existed. Once every screen became select-and-confirm, that copy was
+mostly restating what the highlight already shows, so HELP is now two lines —
+`Hold UP: Start/Stop recording` and `Hold OK: Wi-Fi hotspot setup` — and needs no
+scroll. The virtual-window machinery stays in place for the lists (it is what
+keeps memory flat as pages grow); `main/sb_scroll.h` is pure and host-tested
+(`tests/test_sb_scroll.c`) across the boundaries that are easy to get wrong: top
+and bottom overrun, fewer items than rows, and empty lists.
 
-The window arithmetic (`main/sb_scroll.h`) is pure and host-tested
-(`tests/test_sb_scroll.c`) across the boundaries that are easy to get wrong —
-top and bottom overrun, fewer items than rows, a zero-height viewport and empty
-lists. The real widget behaviour was verified separately by building the actual
-`sb_ui.c` against LVGL 9.6 and driving the window, including a synthetic
-12-item page, since no shipped page reaches the scrolling path.
+DEVICE keeps its values inside their own column. `Slot` shows `A` or `B` rather
+than the internal `ota_0`/`ota_1` (the letters are the same two slots the OTA
+switch names), and `Branch` shows a prefix ending in `...` unless the cursor is
+on that row — selecting it starts a marquee that walks the whole name through
+the column, wrapping around with a gap so every character is reachable. The
+prefix length is computed from the Branch label's own width (`main/sb_text.c`,
+`sb_text_fit_ellipsis`), so a truncated value can never creep over the key
+beside it; long OTA failure reasons are clipped the same way. The `Check for
+update` row needs no `press OK` hint: its name is already drawn in the link
+colour.
 
 ## Hand-won engineering findings
 
@@ -176,8 +189,8 @@ These were all found with the on-device console tool, in this order:
 Host-testable logic is deliberately split out of the LVGL/ESP-IDF code and
 covered by `tests/test_sb_*.c`: framing (`sb_proto`), VAD (`sb_vad`), codec
 (`sb_adpcm`), offline-slot codec (`sb_cache_slot`), manifest parsing
-(`sb_json`), page hierarchy (`sb_nav`) and the list/Help scroll window
-(`sb_scroll`).
+(`sb_json`), page hierarchy (`sb_nav`), the list scroll window (`sb_scroll`) and
+width-aware text clipping / marquee (`sb_text`).
 
 ## UI design notes (taste house style)
 
@@ -392,7 +405,7 @@ names only, so a request cannot escape the directory.
 ```text
 Build:        PASS  (GitHub Actions, ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto, sb_vad, sb_adpcm, sb_cache_slot, sb_json, sb_nav,
-                     sb_scroll (list window + Help pixel scroll),
+                     sb_scroll (list window), sb_text (clip / marquee),
                      cloud protocol/adpcm/providers/server/autotranscribe/firmware,
                      repo checks)
 Device tests: PASS for the core path

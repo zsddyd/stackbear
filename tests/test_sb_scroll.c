@@ -89,22 +89,6 @@ int main(void)
     sb_scroll_follow(&s);
     assert(s.scroll == 0);
 
-    // visible_index:窗口内为真,窗口外为假。
-    s = (sb_scroll_t){ .count = 20, .visible = 5, .cursor = 7, .scroll = 5 };
-    assert(sb_scroll_visible_index(&s, 4) == 0);
-    assert(sb_scroll_visible_index(&s, 5) == 1);
-    assert(sb_scroll_visible_index(&s, 9) == 1);
-    assert(sb_scroll_visible_index(&s, 10) == 0);
-
-    // 像素滚动(Help 这类不等高内容):夹在 [0, content-view]。
-    assert(sb_scroll_clamp_px(-5, 400, 300) == 0);
-    assert(sb_scroll_clamp_px(0, 400, 300) == 0);
-    assert(sb_scroll_clamp_px(50, 400, 300) == 50);
-    assert(sb_scroll_clamp_px(100, 400, 300) == 100);
-    assert(sb_scroll_clamp_px(999, 400, 300) == 100);
-    assert(sb_scroll_clamp_px(50, 200, 300) == 0);   // 内容比视口短
-    assert(sb_scroll_clamp_px(50, 400, 0) == 0);     // 视口为 0
-
     puts("test_sb_scroll: PASS");
     return 0;
 }
