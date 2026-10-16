@@ -76,7 +76,7 @@ the meaning of "twice" depend on how fast the user pressed:
 | STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to SETTINGS | enter provisioning |
 | DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to SETTINGS | enter provisioning |
 | HELP | — | — | — | — | back to SETTINGS | enter provisioning |
-| SETUP (provisioning) | — | — | — | — | — | cancel and return |
+| SETUP (provisioning) | — | — | — | — | cancel and return | cancel and return |
 
 Taps always move one row each, however fast they are repeated. On SETTINGS the
 rows that respond to OK show their name in the accent colour and the rest are
@@ -86,8 +86,10 @@ labelled `Start recording` while paused, so it always names what pressing it
 does. HOME starts with the highlight on that row. Long-press UP is the shortcut
 for the same start/stop action and works regardless of where the highlight sits;
 recording is still not bound on any list page, so browsing cannot stop a session.
-The provisioning page is a modal and says so on screen (`UP/DOWN off, hold OK to
-exit`). The aggregate state (which fuses credential, link, pause and uplink)
+The provisioning page is a modal. Short UP/DOWN/OK stay inert there — the page
+says so on screen (`hold DOWN or OK to exit`) — but long-press DOWN leaves it,
+like it goes back everywhere else; leaving by long-press OK still works, since
+that is the switch that entered the page. The aggregate state (which fuses credential, link, pause and uplink)
 lives only on HOME so no sub-page repeats it; Wi-Fi and Uplink are separate rows
 because a healthy Wi-Fi link does not imply uploads work.
 

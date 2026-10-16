@@ -99,7 +99,14 @@ static void handle_input(const input_event_t *in)
         in->event == BSP_BTN_RELEASE && sb_key_nav_release(&s_key_nav);
 
     if (s_setup_mode) {
-        if (in->btn == BSP_BTN_OK && in->event == BSP_BTN_LONG) {
+        // 配网页也是"长按返回":每个页面的长按 DOWN 都是往回走,配网页不能例外
+        // (用户学会"长按 DOWN 退出"之后,在这里按它却没有反应,是最容易让人以为
+        // 设备卡住的地方)。
+        //
+        // 长按 OK 依然保留:它是"进 / 出配网"的同一个开关,前面用它进来的用户不会
+        // 突然失灵。
+        if (in->event == BSP_BTN_LONG &&
+            (in->btn == BSP_BTN_DOWN || in->btn == BSP_BTN_OK)) {
             exit_setup_locked();
         }
         return;

@@ -537,9 +537,11 @@ static void build_provision(void)
     lv_obj_align(l3, LV_ALIGN_TOP_LEFT, 14, 104);
     lv_obj_t *l4 = label(c, "http://192.168.4.1/", &lv_font_montserrat_14, C_ACCENT);
     lv_obj_align(l4, LV_ALIGN_TOP_LEFT, 14, 128);
-    // 配网页是模态:UP/DOWN 与 OK 短按在这里刻意不做事,只有长按 OK 能退出。
-    // 明写出来,否则用户在配网页上按上/下会以为设备卡住了(其他每个页面它们都有作用)。
-    lv_obj_t *hint = label(s_prov_scr, "UP/DOWN off, hold OK to exit",
+    // 配网页是模态:UP/DOWN 与 OK 短按在这里刻意不做事。退出方式必须写在屏幕上,
+    // 否则用户按上/下没有反应会以为设备卡住了(其他每个页面它们都有作用)。
+    // 主推长按 DOWN —— 与其它页面的"长按返回"一致;长按 OK 也保留(它是进/出配网
+    // 的同一个开关),所以文案里带上它。
+    lv_obj_t *hint = label(s_prov_scr, "hold DOWN or OK to exit",
                            &lv_font_montserrat_14, C_MUTED);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
