@@ -19,6 +19,7 @@ int sb_nav_rows(sb_nav_page_t page)
     case SB_NAV_REC:     return REC_ROWS;
     case SB_NAV_DEV:     return DEV_ROWS;
     case SB_NAV_STORAGE: return STORAGE_ROWS;
+    case SB_NAV_HELP:    return 0;   // Help 是整页滚动文字,没有可停的光标
     default:             return 0;   // HOME / PROVISION 不是列表页
     }
 }
@@ -47,6 +48,7 @@ sb_nav_page_t sb_nav_parent(sb_nav_page_t page)
     case SB_NAV_REC:
     case SB_NAV_DEV:
     case SB_NAV_STORAGE:
+    case SB_NAV_HELP:
         return SB_NAV_MENU;          // 子页上一层是菜单
     default:
         return page;                 // HOME / PROVISION 无处可退
@@ -60,6 +62,7 @@ sb_nav_page_t sb_nav_menu_target(int row)
     case SB_MENU_RECORDER: return SB_NAV_REC;
     case SB_MENU_DEVICE: return SB_NAV_DEV;
     case SB_MENU_STORAGE: return SB_NAV_STORAGE;
+    case SB_MENU_HELP: return SB_NAV_HELP;
     default: return SB_NAV_MENU;
     }
 }

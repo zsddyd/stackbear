@@ -55,7 +55,8 @@ HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ RECORDER  Recording / Segments / Sent / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
-     └ STORAGE   Cache / Size / Used / Pending / Dropped
+     ├ STORAGE   Cache / Size / Used / Pending / Dropped
+     └ HELP      the key guide, grouped by page and scrolled with UP/DOWN
 ```
 
 Keys are uniform and per-page consistent. A "tap" is one press-and-release;
@@ -71,6 +72,7 @@ is a session-level destructive action, so it is bound to a long press only:
 | NETWORK / RECORDER | cursor up | cursor down | — (read-only) | — | back to STATUS | enter provisioning |
 | DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to STATUS | enter provisioning |
 | STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to STATUS | enter provisioning |
+| HELP | scroll up | scroll down | — | — | back to STATUS | enter provisioning |
 | SETUP (provisioning) | — | — | — | — | — | cancel and return |
 
 Taps always move one row each, however fast they are repeated. Rows that respond
@@ -80,6 +82,32 @@ provisioning page is a modal and says so on screen (`UP/DOWN off, hold OK to
 exit`). The aggregate state (which fuses credential, link, pause and uplink)
 lives only on HOME so no sub-page repeats it; Wi-Fi and Uplink are separate rows
 because a healthy Wi-Fi link does not imply uploads work.
+
+### Scrolling lists and the key guide
+
+Lists are drawn from a *virtual window*: a page declares how many items it has,
+but only the rows that fit on screen are created, and scrolling re-points those
+slots at a different slice of the item list. The object count is therefore fixed
+by the screen height and does not grow with the number of items, so adding
+information to NETWORK / RECORDER / DEVICE / STORAGE later cannot inflate LVGL
+memory — it just becomes scrollable. A slim scroll bar appears on the right only
+when a page actually overflows. Every shipped page has at most seven rows, which
+is exactly one screen, so nothing visible changed except the new HELP row.
+
+HELP answers the question a new user actually has — "what can I press on *this*
+screen?" — so it is grouped by page rather than by button. Grouping by page
+needs more lines than fit at once (32 lines, 512 px of text into a 262 px
+window), which is why it is a full-screen pixel-scrolled page: UP/DOWN scroll it
+one line at a time and a scroll bar tracks the position. The copy is measured
+against the real Montserrat 14 metrics; the longest line is 210 px inside the
+216 px text column, so no line wraps or clips.
+
+The window arithmetic (`main/sb_scroll.h`) is pure and host-tested
+(`tests/test_sb_scroll.c`) across the boundaries that are easy to get wrong —
+top and bottom overrun, fewer items than rows, a zero-height viewport and empty
+lists. The real widget behaviour was verified separately by building the actual
+`sb_ui.c` against LVGL 9.6 and driving the window, including a synthetic
+12-item page, since no shipped page reaches the scrolling path.
 
 ## Hand-won engineering findings
 
@@ -148,7 +176,8 @@ These were all found with the on-device console tool, in this order:
 Host-testable logic is deliberately split out of the LVGL/ESP-IDF code and
 covered by `tests/test_sb_*.c`: framing (`sb_proto`), VAD (`sb_vad`), codec
 (`sb_adpcm`), offline-slot codec (`sb_cache_slot`), manifest parsing
-(`sb_json`) and page hierarchy (`sb_nav`).
+(`sb_json`), page hierarchy (`sb_nav`) and the list/Help scroll window
+(`sb_scroll`).
 
 ## UI design notes (taste house style)
 
@@ -363,6 +392,7 @@ names only, so a request cannot escape the directory.
 ```text
 Build:        PASS  (GitHub Actions, ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto, sb_vad, sb_adpcm, sb_cache_slot, sb_json, sb_nav,
+                     sb_scroll (list window + Help pixel scroll),
                      cloud protocol/adpcm/providers/server/autotranscribe/firmware,
                      repo checks)
 Device tests: PASS for the core path

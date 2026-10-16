@@ -15,6 +15,7 @@ typedef enum {
     SB_NAV_REC,         // RECORDER
     SB_NAV_DEV,         // DEVICE
     SB_NAV_STORAGE,     // STORAGE
+    SB_NAV_HELP,        // HELP(整页滚动文字,没有光标)
     SB_NAV_PROVISION,   // 配网页(不参与常规导航层级)
     SB_NAV_PAGE_COUNT
 } sb_nav_page_t;
@@ -25,6 +26,7 @@ typedef enum {
     SB_MENU_RECORDER,
     SB_MENU_DEVICE,
     SB_MENU_STORAGE,
+    SB_MENU_HELP,
     SB_MENU_ROWS
 } sb_menu_row_t;
 

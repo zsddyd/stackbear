@@ -7,11 +7,15 @@
 //        ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
 //        ├ RECORDER  Recording / Segments / Sent / Dropped
 //        ├ DEVICE    Device ID / Firmware / Slot / Commit / Built / Check for update
-//        └ STORAGE   Cache / Size / Used / Pending / Dropped + 说明
+//        ├ STORAGE   Cache / Size / Used / Pending / Dropped + 说明
+//        └ HELP      按键说明(按页面分组),UP/DOWN 整页滚动
 //
 // 设计取舍:HOME 独占那个"聚合状态"(它融合了凭据/链路/暂停/上行四层判断),
 // 子页只讲自己那一层,避免同一结论在多处重复;NETWORK 里 Wi-Fi 与 Uplink 分列,
 // 因为"WiFi 通"不等于"能上传"。
+//
+// 列表页是**虚拟窗口**:页面声明条目数,只创建一屏能放下的行槽,滚动时重指——
+// 所以条目数不增加 LVGL 对象,加内容只会变成可滚动(见 sb_scroll.h)。
 #pragma once
 
 #include "lvgl.h"
@@ -24,6 +28,7 @@ typedef enum {
     SB_SCREEN_REC,
     SB_SCREEN_DEV,
     SB_SCREEN_STORAGE,
+    SB_SCREEN_HELP,
     SB_SCREEN_PROVISION,
 } sb_screen_t;
 

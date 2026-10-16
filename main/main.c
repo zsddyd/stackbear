@@ -123,9 +123,11 @@ static void handle_input(const input_event_t *in)
         return;  // 拿不到锁就不猜页面,丢弃这次按键,避免误路由
     }
     const sb_screen_t screen = sb_ui_current();
+    // Help 也是"上下键有作用"的页,只是它滚的是文字而不是光标,所以和列表页走同一
+    // 条分支(sb_ui_move 内部按页面分发)。漏掉它会让 Help 页上下键完全失灵。
     const bool is_list = screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET ||
                          screen == SB_SCREEN_REC || screen == SB_SCREEN_DEV ||
-                         screen == SB_SCREEN_STORAGE;
+                         screen == SB_SCREEN_STORAGE || screen == SB_SCREEN_HELP;
     if (is_list) {
         // 列表页:UP/DOWN 每次轻点移动一格,OK 单击激活当前行。每一行是不是可操作
         // 由 UI 自己判断(见 sb_ui_row_actionable),上层不必知道"第几行是哪一项"。

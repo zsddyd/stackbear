@@ -50,7 +50,8 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ RECORDER  Recording / Segments / Sent / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
-     └ STORAGE   Cache / Size / Used / Pending / Dropped
+     ├ STORAGE   Cache / Size / Used / Pending / Dropped
+     └ HELP      按键说明,按页面分组,用 UP/DOWN 滚动
 ```
 
 按键语义逐页统一。"轻点"指一次按下并抬起;不设双击手势,因为按键组件会把间隔小于
@@ -64,6 +65,7 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
 | NETWORK / RECORDER | 光标上移 | 光标下移 | —(纯展示) | — | 返回 STATUS | 进配网 |
 | DEVICE | 光标上移 | 光标下移 | 执行选中动作(仅 `Check for update` 行) | — | 返回 STATUS | 进配网 |
 | STORAGE | 光标上移 | 光标下移 | 切换选中设置(仅 `Cache` 与 `Size`) | — | 返回 STATUS | 进配网 |
+| HELP | 向上滚动 | 向下滚动 | — | — | 返回 STATUS | 进配网 |
 | SETUP(配网) | — | — | — | — | — | 取消并返回 |
 
 无论连按多快,每次轻点都只移动一格。对 OK 有反应的行,其名称用强调色标出,其余为
@@ -71,6 +73,25 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
 写明(`UP/DOWN off, hold OK to exit`)。聚合状态(融合凭据、链路、暂停、上行四层
 判断)只在 HOME 出现,子页不重复;Wi-Fi 与 Uplink 分列,因为"WiFi 通"并不等于
 "能上传"。
+
+### 列表滚动与按键说明页
+
+列表按**虚拟窗口**渲染:页面只声明条目数,屏幕上放得下几行就只创建几个行槽,
+滚动时把这些槽重新指向条目的另一段。对象数由屏幕高度决定,不随条目增长,所以
+以后往 NETWORK / RECORDER / DEVICE / STORAGE 里加信息不会撑大 LVGL 内存 ——
+加出来只是可滚动。右侧那条细滚动条只在页面确实超屏时才出现。现有每个页面都不超过
+7 行(正好一屏),所以除了新增的 HELP 行,外观没有任何变化。
+
+HELP 回答的是新用户真正的问题——"**在这个屏幕上**我能按什么",所以它按页面分组
+而不是按按键分组。按页面分组要写的内容超过一屏(32 行、512px 文字塞进 262px
+窗口),因此它是一整页像素滚动:UP/DOWN 每次滚一行,滚动条跟随位置。文案是按
+真实 Montserrat 14 字体度量过的,最长一行 210px,落在 216px 文本列内,不会折行
+或被裁掉。
+
+窗口算术(`main/sb_scroll.h`)是纯逻辑并有主机测试(`tests/test_sb_scroll.c`),
+覆盖最容易写错的边界:顶部/底部越界、条目少于可视行、视口高度为 0、空列表。真实
+控件行为另外验证过:用 LVGL 9.6 编译**真实的** `sb_ui.c` 并驱动窗口,其中包含一个
+刻意构造的 12 条目页面,因为现有页面都到不了滚动路径。
 
 ## 排查出来的工程结论
 
@@ -121,7 +142,7 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
 
 可主机测试的逻辑都刻意从 LVGL/ESP-IDF 代码里剥离,由 `tests/test_sb_*.c` 覆盖:
 分帧(`sb_proto`)、VAD(`sb_vad`)、编解码(`sb_adpcm`)、离线槽位(`sb_cache_slot`)、
-清单解析(`sb_json`)、页面层级(`sb_nav`)。
+清单解析(`sb_json`)、页面层级(`sb_nav`)、列表与 Help 的滚动窗口(`sb_scroll`)。
 
 ## 界面设计说明(taste 规范)
 
@@ -293,6 +314,7 @@ worker 支持音频的池子里。
 ```text
 Build:        PASS  (GitHub Actions,ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto、sb_vad、sb_adpcm、sb_cache_slot、sb_json、sb_nav、
+                     sb_scroll(列表窗口 + Help 像素滚动)、
                      cloud 协议/adpcm/providers/server/autotranscribe/firmware、
                      仓库检查)
 Device tests: 核心链路 PASS

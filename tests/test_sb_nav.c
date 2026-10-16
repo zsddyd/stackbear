@@ -25,13 +25,17 @@ static void test_parent_chain(void)
     CHECK(sb_nav_parent(SB_NAV_REC) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_DEV) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_STORAGE) == SB_NAV_MENU, "");
+    CHECK(sb_nav_parent(SB_NAV_HELP) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_MENU) == SB_NAV_HOME, "");
     // 主页与配网页无处可退(长按返回应停在原页,不能把用户甩到空屏)。
     CHECK(sb_nav_parent(SB_NAV_HOME) == SB_NAV_HOME, "");
     CHECK(sb_nav_parent(SB_NAV_PROVISION) == SB_NAV_PROVISION, "");
 
     // 从任意子页连按返回,必须能走到主页且不越界。
-    for (sb_nav_page_t p = SB_NAV_MENU; p < SB_NAV_PROVISION; p++) {
+    for (sb_nav_page_t p = SB_NAV_MENU; p < SB_NAV_PAGE_COUNT; p++) {
+        if (p == SB_NAV_PROVISION) {
+            continue;   // 配网是模态页,长按 OK 退出而不是走父链
+        }
         int steps = 0;
         sb_nav_page_t cur = p;
         while (cur != SB_NAV_HOME && steps < 8) {
@@ -48,6 +52,7 @@ static void test_menu_targets(void)
     CHECK(sb_nav_menu_target(SB_MENU_RECORDER) == SB_NAV_REC, "");
     CHECK(sb_nav_menu_target(SB_MENU_DEVICE) == SB_NAV_DEV, "");
     CHECK(sb_nav_menu_target(SB_MENU_STORAGE) == SB_NAV_STORAGE, "");
+    CHECK(sb_nav_menu_target(SB_MENU_HELP) == SB_NAV_HELP, "");
     // 越界不能崩,也不能跳到意外的页。
     CHECK(sb_nav_menu_target(-1) == SB_NAV_MENU, "");
     CHECK(sb_nav_menu_target(SB_MENU_ROWS) == SB_NAV_MENU, "");
@@ -55,11 +60,12 @@ static void test_menu_targets(void)
 
 static void test_rows_and_clamp(void)
 {
-    CHECK(sb_nav_rows(SB_NAV_MENU) == 4, "");
+    CHECK(sb_nav_rows(SB_NAV_MENU) == 5, "");
     CHECK(sb_nav_rows(SB_NAV_NET) == 5, "");
     CHECK(sb_nav_rows(SB_NAV_REC) == 4, "");
     CHECK(sb_nav_rows(SB_NAV_DEV) == 7, "");
     CHECK(sb_nav_rows(SB_NAV_STORAGE) == 5, "");
+    CHECK(sb_nav_rows(SB_NAV_HELP) == 0, "");        // 整页滚动文字,没有光标
     CHECK(sb_nav_rows(SB_NAV_HOME) == 0, "");        // 非列表页
     CHECK(sb_nav_rows(SB_NAV_PROVISION) == 0, "");
 
@@ -99,6 +105,7 @@ static void test_actionable_rows(void)
     CHECK(!sb_nav_row_actionable(SB_NAV_DEV, 7), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_STORAGE, -1), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_HOME, 0), "");
+    CHECK(!sb_nav_row_actionable(SB_NAV_HELP, 0), "");   // Help 没有行
 }
 
 // 界面用 sb_nav_row_actionable() 给可操作行的名称上强调色(用户否则看不出

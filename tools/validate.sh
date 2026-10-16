@@ -60,6 +60,10 @@ run_static_checks() {
         -o "${test_dir}/test_sb_nav"
     "${test_dir}/test_sb_nav"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_sb_scroll.c \
+        -o "${test_dir}/test_sb_scroll"
+    "${test_dir}/test_sb_scroll"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_sb_key_nav.c \
         -o "${test_dir}/test_sb_key_nav"
     "${test_dir}/test_sb_key_nav"
