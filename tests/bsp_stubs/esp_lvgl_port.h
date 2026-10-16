@@ -25,6 +25,14 @@ esp_err_t lvgl_port_init(const lvgl_port_cfg_t *);
 esp_err_t lvgl_port_deinit(void);
 bool lvgl_port_lock(uint32_t);
 void lvgl_port_unlock(void);
+
+/* Port task wake-up. The display layer registers a timer-resume callback that
+   uses these to wake the LVGL task when a non-LVGL task starts an animation. */
+#define LVGL_PORT_EVENT_USER 0x80
+esp_err_t lvgl_port_task_wake(int event, void *param);
+typedef void (*lv_timer_handler_resume_cb_t)(void *data);
+void lv_timer_handler_set_resume_cb(lv_timer_handler_resume_cb_t cb, void *data);
+
 lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *);
 esp_err_t lvgl_port_remove_disp(lv_display_t *);
 void lv_display_add_event_cb(lv_display_t *, void (*)(lv_event_t *), int, void *);

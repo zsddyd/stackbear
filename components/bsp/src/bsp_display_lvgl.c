@@ -15,6 +15,19 @@ static lv_display_t *s_disp;
 static bool s_port_initialized;
 static bool s_port_init_failed;
 
+// LVGL 需要在“比原定时间更早跑一次定时器”时通知宿主(见 lv_timer_handler_resume)。
+// 这里把 LVGL 任务立刻唤醒。esp_lvgl_port 自身没有注册这个回调,所以当别的任务
+// (按键任务)里启动动画或触发重绘时,LVGL 任务仍会睡满 lv_timer_handler() 返回的
+// 时长 —— 上限是 task_max_sleep_ms(默认 500ms)—— 动画帧被整段睡过去,表现出来
+// 就是“只有第一次有滑动效果,之后全是瞬移”。
+//
+// 注册它之后:空闲时任务照旧长睡(功耗不变),只在真的有东西要画时才被叫醒。
+static void lvgl_resume_cb(void *data)
+{
+    (void)data;
+    (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+}
+
 static void rounded_flush_event(lv_event_t *event)
 {
     lv_display_t *disp = lv_event_get_target(event);
@@ -117,6 +130,7 @@ lv_display_t *bsp_lvgl_init(void) {
     // Full-screen rounded clipping creates an ARGB layer that does not fit the
     // 24 KB LVGL pool reliably on this no-PSRAM target.
     s_disp = disp;
+    lv_timer_handler_set_resume_cb(lvgl_resume_cb, NULL);
     lvgl_port_unlock();
 
     ESP_LOGI(TAG, "LVGL 就绪，全局圆角=%d，外部填充=黑色", BSP_LVGL_SCREEN_RADIUS);

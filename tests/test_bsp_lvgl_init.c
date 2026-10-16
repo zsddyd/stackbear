@@ -44,6 +44,21 @@ esp_err_t lvgl_port_remove_disp(lv_display_t *disp) {
     assert(disp == &display && lock_depth && display_live);
     display_live = callback_live = 0; return ESP_OK;
 }
+/* Timer-resume wiring: the display layer must register a callback that wakes the
+   port task, otherwise animations started from another task are slept through. */
+static int wake_calls, wake_while_unlocked;
+esp_err_t lvgl_port_task_wake(int event, void *param) {
+    (void)param;
+    assert(event == LVGL_PORT_EVENT_USER);
+    ++wake_calls;
+    if (!lock_depth) ++wake_while_unlocked;
+    return ESP_OK;
+}
+static lv_timer_handler_resume_cb_t resume_cb;
+void lv_timer_handler_set_resume_cb(lv_timer_handler_resume_cb_t cb, void *data) {
+    (void)data; resume_cb = cb;
+}
+
 void lv_display_add_event_cb(lv_display_t *disp, void (*cb)(lv_event_t *), int code, void *user) {
     (void)user;
     assert(lock_depth && disp == &display && code == LV_EVENT_FLUSH_START && cb == rounded_flush_event);
@@ -72,6 +87,12 @@ int main(void) {
     assert(bsp_lvgl_init() == &display);
     assert(init_calls == retained_init_calls); // Display retries reuse the port.
     assert(callback_live && !lock_depth && unlocked_flushes == 1);
+    // Resume callback must be registered and must wake the port task when the
+    // timer system asks for an earlier run (e.g. an animation started off-task).
+    assert(resume_cb == lvgl_resume_cb);
+    const int wakes_before = wake_calls;
+    resume_cb(NULL);
+    assert(wake_calls == wakes_before + 1 && wake_while_unlocked == 1);
     const int before = init_calls;
     assert(bsp_lvgl_init() == &display && init_calls == before);
     assert(bsp_lvgl_lock(5)); bsp_lvgl_unlock();
