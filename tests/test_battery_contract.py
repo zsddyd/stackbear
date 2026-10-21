@@ -22,7 +22,14 @@ class BatteryOnEveryScreenTest(unittest.TestCase):
         cls.ui = (ROOT / "main" / "sb_ui.c").read_text(encoding="utf-8")
 
     def function_body(self, name: str) -> str:
-        match = re.search(rf"\b{re.escape(name)}\s*\([^;]*?\)\s*\{{", self.ui)
+        # Anchor to a definition at line start: a bare `name(` also appears inside
+        # prose comments, and matching there would splice one function's body onto
+        # another's opening brace.
+        match = re.search(
+            rf"^(?:static\s+)?[\w \*]*\b{re.escape(name)}\s*\([^;]*?\)\s*\{{",
+            self.ui,
+            re.MULTILINE,
+        )
         if not match:
             raise AssertionError(f"function not found: {name}")
         start = match.end() - 1
@@ -43,9 +50,9 @@ class BatteryOnEveryScreenTest(unittest.TestCase):
 
     def test_every_screen_is_built_by_base_screen(self) -> None:
         # Each page either calls base_screen() directly or goes through
-        # page_init(), which does. A new page that skipped it would silently
+        # page_build(), which does. A new page that skipped it would silently
         # lose the battery, so require one of the two here.
-        for name in ["build_home", "build_help", "build_provision", "page_init"]:
+        for name in ["build_home", "build_help", "build_provision", "page_build"]:
             self.assertIn(
                 "base_screen(",
                 self.function_body(name),

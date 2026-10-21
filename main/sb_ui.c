@@ -140,12 +140,13 @@ static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font
 // 每个页面右上角都要有电量,所以它在这里统一创建 —— 而不是让每个页面自己记得加。
 // 曾经只有 HOME 有,用户一进子页就看不到电量了(而"还剩多少电"恰恰是子页里最想
 // 顺手确认的一件事)。每块屏幕是独立对象,不能共用一个标签,所以登记下来统一刷新。
-#define BATT_MAX_SCREENS 9   // HOME + 6 个设置页 + HELP + 配网
+//
+// 按**屏幕枚举**登记而不是压进一个紧凑数组:页面现在会随进出被删除重建(见
+// screen_release_if_lazy),数组下标会跟着失效;而用屏幕本身当下标,删除时把对应
+// 槽置 NULL 即可 —— 否则 battery_refresh() 会拿着已释放的标签指针写野内存。
+static lv_obj_t *s_batt_label[SB_SCREEN_COUNT];
 
-static lv_obj_t *s_batt_label[BATT_MAX_SCREENS];
-static int s_batt_count;
-
-static lv_obj_t *base_screen(const char *title)
+static lv_obj_t *base_screen(sb_screen_t screen, const char *title)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
     if (scr == NULL) {
@@ -164,8 +165,8 @@ static lv_obj_t *base_screen(const char *title)
     lv_obj_t *b = label(scr, "--%", &lv_font_montserrat_14, C_TEXT);
     if (b != NULL) {
         lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -12, 10);
-        if (s_batt_count < BATT_MAX_SCREENS) {
-            s_batt_label[s_batt_count++] = b;
+        if (screen >= 0 && screen < SB_SCREEN_COUNT) {
+            s_batt_label[screen] = b;
         }
     }
     return scr;
@@ -176,9 +177,9 @@ static lv_obj_t *base_screen(const char *title)
 static void battery_refresh(void)
 {
     const int soc = bsp_battery_soc();
-    for (int i = 0; i < s_batt_count; i++) {
+    for (int i = 0; i < SB_SCREEN_COUNT; i++) {
         if (s_batt_label[i] == NULL) {
-            continue;   // 该页的电量标签没建出来(池耗尽)
+            continue;   // 该页没建出来,或已被删除(懒加载)
         }
         if (soc < 0) {
             lv_label_set_text(s_batt_label[i], "--%");
@@ -223,11 +224,19 @@ typedef struct {
     lv_obj_t *bar_thumb;                  // 滚动条滑块
     const char *const *item_names;        // 该页的条目名(条目下标 -> 文案)
     sb_nav_page_t nav;                    // 该页在 sb_nav 里的身份:行是否可操作由它决定
+    sb_screen_t screen;                   // 该页对应的屏幕枚举(建/删时用来登记与注销)
+    const char *title;                    // 建页时的标题(懒加载重建要用)
+    int item_count;                       // 条目数(懒加载重建要用)
+    void (*extra_build)(lv_obj_t *);      // 行槽之外还要画的东西(DISPLAY 的三行提示)
     int slots;                            // 实际创建的行槽数 = min(条目数, LIST_SLOTS)
     sb_scroll_t win;                      // 条目数 / 可视行数 / 光标 / 窗口起点
 } list_page_t;
 
 static list_page_t s_menu, s_net, s_rec, s_dev, s_stor, s_disp;
+
+// 页面的按需构建/释放。定义在后面(sb_ui_show 附近),但 sb_ui_init 也要用。
+static bool ensure_screen(sb_screen_t s);
+static void screen_release_if_lazy(sb_screen_t s);
 
 // ---------------------------------------------------------------------------
 // 滚动条指示。列表页与 Help 页共用:只在"内容确实超出可视区"时出现,否则整条
@@ -341,32 +350,58 @@ static void page_render_window(list_page_t *p)
             continue;
         }
         // 名称随窗口滑入滑出:可操作与否只问 sb_nav,界面不重复定义规则。
-        lv_label_set_text(p->names[k], p->item_names[item]);
-        lv_obj_set_style_text_color(p->names[k],
-                                    lv_color_hex(sb_nav_row_actionable(p->nav, item)
-                                                     ? C_ACCENT
-                                                     : C_MUTED),
-                                    0);
+        // names[k] 可能为 NULL(池不足时 label() 返回 NULL),上面的循环只覆盖了
+        // 隐藏/显示,没覆盖这里的解引用。
+        if (p->names[k] != NULL) {
+            lv_label_set_text(p->names[k], p->item_names[item]);
+            lv_obj_set_style_text_color(p->names[k],
+                                        lv_color_hex(sb_nav_row_actionable(p->nav, item)
+                                                         ? C_ACCENT
+                                                         : C_MUTED),
+                                        0);
+        }
         // 数值留空:真正的内容由 refresh_* 每 500ms 填,滚动后由 page_move 立刻
         // 补一次,避免滑进来的行短暂显示上一行的残留值。
-        lv_label_set_text(p->vals[k], "");
+        if (p->vals[k] != NULL) {
+            lv_label_set_text(p->vals[k], "");
+        }
     }
 }
 
-static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
-                      const char *const *names, int count)
+// 只记下"这一页该怎么建",不动 LVGL 对象 —— 真正的建页在 page_build() 里,由
+// ensure_screen() 在页面**第一次被显示**时调用。这样开机只需建 HOME 与 SETTINGS,
+// 其余页面按需生成,池的峰值从"全部页面"降到"常驻集 + 当前页"。
+static void page_config(list_page_t *p, sb_screen_t screen, sb_nav_page_t nav,
+                        const char *title, const char *const *names, int count)
 {
+    p->screen = screen;
     p->nav = nav;
+    p->title = title;
     p->item_names = names;
-    // 只建页面真正需要的槽:条目少的页(4 行)没必要养 7 套对象。窗口上限仍是
-    // LIST_SLOTS,所以条目再多也只是滚动,不会再增加对象。
+    p->item_count = count;
+    p->extra_build = NULL;
     p->slots = count < LIST_SLOTS ? count : LIST_SLOTS;
     p->win.count = count;
     p->win.visible = p->slots;
     p->win.cursor = 0;
     p->win.scroll = 0;
+    p->scr = NULL;
+    p->sel = NULL;
+    p->bar_track = NULL;
+    p->bar_thumb = NULL;
+    for (int i = 0; i < LIST_SLOTS; i++) {
+        p->rows[i] = NULL;
+        p->names[i] = NULL;
+        p->vals[i] = NULL;
+    }
     sb_scroll_follow(&p->win);
-    p->scr = base_screen(title);
+}
+
+// 真正创建这一页的 LVGL 对象。用 page_config() 记下的参数,所以重建时无需再传。
+static void page_build(list_page_t *p)
+{
+    // 光标与滚动位置保留:离开再回来时用户期望停在原处,而不是回到第一行。
+    p->scr = base_screen(p->screen, p->title);
     // 屏幕没建出来时,后续所有 lv_obj_create(p->scr) 都会把 NULL 父对象解释成
     // "再建一个屏幕" —— 那不是失败,而是悄悄多出几个游离屏幕对象,比直接失败更糟。
     // 所以这里必须早退,把整页留成"空页"。
@@ -423,6 +458,10 @@ static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
     }
 
     bar_create(p->scr, C_CARD, C_SEL, BAR_ROW_H, &p->bar_track, &p->bar_thumb);
+    // 页面自带的额外静态装饰(DISPLAY 的三行提示)。放在行槽之后,避免被行底色盖住。
+    if (p->extra_build != NULL) {
+        p->extra_build(p->scr);
+    }
     page_render_window(p);
     bar_apply(p->bar_track, p->bar_thumb, BAR_ROW_H,
               p->win.scroll, p->win.count, p->slots);
@@ -523,7 +562,7 @@ static int s_home_cursor;
 
 static void build_home(void)
 {
-    s_home_scr = base_screen("STACKBEAR RECORDER");   // 右上角的电量由 base_screen 建
+    s_home_scr = base_screen(SB_SCREEN_HOME, "STACKBEAR RECORDER");   // 右上角的电量由 base_screen 建
     if (s_home_scr == NULL) {
         return;   // 池已耗尽:不建 HOME,由 sb_ui_init 的日志说明原因
     }
@@ -671,7 +710,7 @@ static char s_ap_name[40] = "";
 
 static void build_provision(void)
 {
-    s_prov_scr = base_screen("SETUP MODE");
+    s_prov_scr = base_screen(SB_SCREEN_PROVISION, "SETUP MODE");
     if (s_prov_scr == NULL) {
         return;
     }
@@ -735,7 +774,7 @@ static const char *const HELP_VALUES[] = {"Start / stop", "Back a level", "Set u
 
 static void build_help(void)
 {
-    s_help_scr = base_screen("HELP");
+    s_help_scr = base_screen(SB_SCREEN_HELP, "HELP");
     if (s_help_scr == NULL) {
         return;
     }
@@ -845,7 +884,7 @@ static void build_pages(void)
     // 顺序:Recorder / Network / Storage / Device / Display / Help —— 最常看的排最前。
     static const char *menu_names[] = {"Recorder", "Network", "Storage", "Device",
                                        "Display", "Help"};
-    page_init(&s_menu, SB_NAV_MENU, "SETTINGS", menu_names, 6);
+    page_config(&s_menu, SB_SCREEN_MENU, SB_NAV_MENU, "SETTINGS", menu_names, 6);
 
     // 页面行数必须与 sb_nav(层级与光标边界的唯一事实来源)一致,否则光标会
     // 停到不存在的行、或漏掉最后一行。放在这里用编译期断言钉住。
@@ -854,34 +893,35 @@ static void build_pages(void)
 
     // NETWORK:Wi-Fi 与 Uplink 分列 —— "WiFi 通"不等于"能上传"。
     static const char *net_names[] = {"Wi-Fi", "SSID", "Device IP", "Server IP", "Uplink"};
-    page_init(&s_net, SB_NAV_NET, "NETWORK", net_names, 5);
+    page_config(&s_net, SB_SCREEN_NET, SB_NAV_NET, "NETWORK", net_names, 5);
     _Static_assert(sizeof(net_names) / sizeof(net_names[0]) ==
                        SB_NAV_NET_ROWS, "net row count must match sb_nav");
 
     // RECORDER:只讲录音本身,不重复 WiFi 状态。
     static const char *rec_names[] = {"Recording", "Segments", "Sent", "Dropped"};
-    page_init(&s_rec, SB_NAV_REC, "RECORDER", rec_names, 4);
+    page_config(&s_rec, SB_SCREEN_REC, SB_NAV_REC, "RECORDER", rec_names, 4);
     _Static_assert(sizeof(rec_names) / sizeof(rec_names[0]) ==
                        SB_NAV_REC_ROWS, "rec row count must match sb_nav");
 
     static const char *dev_names[] = {"Device ID", "Firmware", "Slot", "Commit",
                                       "Branch", "Built", "Check for update"};
-    page_init(&s_dev, SB_NAV_DEV, "DEVICE", dev_names, 7);
+    page_config(&s_dev, SB_SCREEN_DEV, SB_NAV_DEV, "DEVICE", dev_names, 7);
     _Static_assert(sizeof(dev_names) / sizeof(dev_names[0]) ==
                        SB_NAV_DEV_ROWS, "dev row count must match sb_nav");
 
     static const char *stor_names[] = {"Cache", "Size", "Used", "Pending", "Dropped"};
-    page_init(&s_stor, SB_NAV_STORAGE, "STORAGE", stor_names, 5);
+    page_config(&s_stor, SB_SCREEN_STORAGE, SB_NAV_STORAGE, "STORAGE", stor_names, 5);
     _Static_assert(sizeof(stor_names) / sizeof(stor_names[0]) ==
                        SB_NAV_STORAGE_ROWS, "storage row count must match sb_nav");
 
     // DISPLAY:只有两行设置。列表页本身没有"提示区",而"OK 选中亮度后 UP/DOWN 变成
     // 增减"这件事光看屏幕猜不出来,所以在行下方补两行静态提示(见 build_display_hint)。
     static const char *disp_names[] = {"Brightness", "Dim after"};
-    page_init(&s_disp, SB_NAV_DISPLAY, "DISPLAY", disp_names, 2);
+    page_config(&s_disp, SB_SCREEN_DISPLAY, SB_NAV_DISPLAY, "DISPLAY", disp_names, 2);
     _Static_assert(sizeof(disp_names) / sizeof(disp_names[0]) ==
                        SB_NAV_DISPLAY_ROWS, "display row count must match sb_nav");
-    build_display_hint(s_disp.scr);
+    s_disp.extra_build = build_display_hint;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,12 +1260,12 @@ void sb_ui_init(void)
     ui_mem_log("启动");
     build_home();
     build_pages();
-    build_help();
     build_provision();
-    // 全部页面建完后的余量 —— 这是判断 CONFIG_LV_MEM_SIZE 是否够用的关键数字。
-    // 注意此时还没渲染过:绘制任务(layer/draw task)也从同一个池里出,所以余量
-    // 必须明显大于"最大连续块"能承受的一次渲染峰值。
-    ui_mem_log("建页后");
+    // 只建常驻页面:HOME(首屏)、SETTINGS(一级入口)、配网页(main 的配网流程持有)。
+    // 其余页面在 sb_ui_show() 里按需构建、离开时释放(见 ensure_screen)。
+    // 这一行的余量就是"常驻集占用",也是懒加载相对全建省下的量。
+    ensure_screen(SB_SCREEN_MENU);
+    ui_mem_log("常驻页建完");
     // 背光按用户保存的亮度启动,而不是每次开机都 100%。空闲计时从"刚初始化"起算,
     // 于是开机后不会立刻把屏幕调暗。
     s_bright_live = sb_config_get()->brightness;
@@ -1253,13 +1293,23 @@ void sb_ui_show(sb_screen_t screen)
         }
         s_bright_adjust = false;
     }
-    // 目标页可能因为池耗尽而没建出来(scr == NULL)。lv_screen_load() 里
-    // LV_CHECK_ARG(scr != NULL) 会直接 return,所以不会崩 —— 但**页面状态已经改了**,
-    // 于是 current_page()/refresh 会去操作一个空页。这里改成:先解析出目标屏幕,
-    // 只有真的存在才切换,否则退回 HOME 并保留原页面状态。
-    lv_obj_t *target = NULL;
+
     sb_screen_t resolved = screen;
-    switch (screen) {
+    if (resolved < 0 || resolved >= SB_SCREEN_COUNT) {
+        resolved = SB_SCREEN_HOME;
+    }
+
+    // 目标页按需构建(懒加载)。建不出来(池不足)就退回 HOME 并保留原页面状态 ——
+    // 不能只让 lv_screen_load() 静默 return:那样页面状态已经改了,current_page()/
+    // refresh 会去操作一个空页。
+    if (!ensure_screen(resolved)) {
+        ESP_LOGW(TAG, "页面 %d 建不出来(池不足),留在当前页", (int)resolved);
+        return;
+    }
+
+    sb_screen_t leaving = s_screen;
+    lv_obj_t *target = NULL;
+    switch (resolved) {
     case SB_SCREEN_MENU:      target = s_menu.scr; break;
     case SB_SCREEN_NET:       target = s_net.scr; break;
     case SB_SCREEN_REC:       target = s_rec.scr; break;
@@ -1268,20 +1318,18 @@ void sb_ui_show(sb_screen_t screen)
     case SB_SCREEN_DISPLAY:   target = s_disp.scr; break;
     case SB_SCREEN_HELP:      target = s_help_scr; break;
     case SB_SCREEN_PROVISION: target = s_prov_scr; break;
-    default:                  target = s_home_scr; resolved = SB_SCREEN_HOME; break;
-    }
-    if (target == NULL) {
-        // 页面没建出来:退回 HOME。HOME 也空(池在启动时就耗尽)时保留状态,
-        // 由 sb_ui_init 的日志说明原因。
-        if (resolved != SB_SCREEN_HOME && s_home_scr != NULL) {
-            ESP_LOGW(TAG, "页面 %d 未建成(池耗尽),退回 HOME", (int)resolved);
-            lv_screen_load(s_home_scr);
-            s_screen = SB_SCREEN_HOME;
-        }
-        return;
+    default:                  target = s_home_scr; break;
     }
     lv_screen_load(target);
     s_screen = resolved;
+
+    // 切过去之后才释放上一页:顺序反过来会让"当前页"在被删除的瞬间还是显示对象。
+    // 这里也排除目标页本身,避免 A->A 时把自己删掉。
+    if (leaving != resolved) {
+        screen_release_if_lazy(leaving);
+    }
+    // 建页/删页都改动了池占用,记一次,便于从日志看懒加载的实际收益。
+    ui_mem_log("切页后");
 }
 
 sb_screen_t sb_ui_current(void)
@@ -1299,6 +1347,136 @@ static list_page_t *current_page(void)
     case SB_SCREEN_STORAGE: return &s_stor;
     case SB_SCREEN_DISPLAY: return &s_disp;
     default:                return NULL;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 页面的按需构建与释放(懒加载)
+//
+// 为什么需要:本板没有 PSRAM,LVGL 用的是**静态池**(CONFIG_LV_MEM_SIZE),开机就把
+// 全部页面建好会一次性吃满池 —— 168 个对象 × 约 290 B ≈ 48.7 KB,正好越过 48 KB。
+// 而绘制任务(layer / lv_draw_task_t)也从同一个池里申请,所以"刚好塞满"必然在渲染
+// 时溢出。
+//
+// 做法:只让 HOME 与 SETTINGS 常驻(SETTINGS 是一级入口,每次都要用),其余页面
+// 进入时才建、离开时删除。峰值从"全部页面"降到"常驻集 + 当前页"。
+//
+// 两个必须守住的点:
+//   1. 释放前先注销登记 —— 电量标签与页面对象都按屏幕枚举登记,删了对象却不注销
+//      会让 refresh() 每 500ms 写已释放的内存。
+//   2. 只释放"懒加载页",不释放常驻页与当前页 —— 后者是 LVGL 正在显示的屏幕。
+// ---------------------------------------------------------------------------
+
+// 该屏幕是否常驻(不参与懒加载释放)。PROVISION 由 main 的配网流程持有,同样常驻。
+static bool screen_is_resident(sb_screen_t s)
+{
+    return s == SB_SCREEN_HOME || s == SB_SCREEN_MENU || s == SB_SCREEN_PROVISION;
+}
+
+// 该屏幕是否**可以**懒加载(即:有可重建的页面工厂)。
+static bool screen_is_lazy(sb_screen_t s)
+{
+    switch (s) {
+    case SB_SCREEN_NET:
+    case SB_SCREEN_REC:
+    case SB_SCREEN_DEV:
+    case SB_SCREEN_STORAGE:
+    case SB_SCREEN_DISPLAY:
+    case SB_SCREEN_HELP:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// 把一块屏幕的登记项清空(对象即将被删除)。
+static void screen_forget(sb_screen_t s)
+{
+    if (s >= 0 && s < SB_SCREEN_COUNT) {
+        s_batt_label[s] = NULL;
+    }
+    if (s == SB_SCREEN_HELP) {
+        s_help_scr = NULL;
+        return;
+    }
+    list_page_t *p = NULL;
+    switch (s) {
+    case SB_SCREEN_NET:     p = &s_net; break;
+    case SB_SCREEN_REC:     p = &s_rec; break;
+    case SB_SCREEN_DEV:     p = &s_dev; break;
+    case SB_SCREEN_STORAGE: p = &s_stor; break;
+    case SB_SCREEN_DISPLAY: p = &s_disp; break;
+    default:                return;
+    }
+    p->scr = NULL;
+    p->sel = NULL;
+    p->bar_track = NULL;
+    p->bar_thumb = NULL;
+    for (int i = 0; i < LIST_SLOTS; i++) {
+        p->rows[i] = NULL;
+        p->names[i] = NULL;
+        p->vals[i] = NULL;
+    }
+}
+
+// 删除一块懒加载屏幕,把它占的池还回去。调用者必须已持 LVGL 锁,且该屏幕不是
+// 当前显示的那块。
+static void screen_release(sb_screen_t s)
+{
+    lv_obj_t *scr = NULL;
+    switch (s) {
+    case SB_SCREEN_HELP: scr = s_help_scr; break;
+    case SB_SCREEN_NET:  scr = s_net.scr; break;
+    case SB_SCREEN_REC:  scr = s_rec.scr; break;
+    case SB_SCREEN_DEV:  scr = s_dev.scr; break;
+    case SB_SCREEN_STORAGE: scr = s_stor.scr; break;
+    case SB_SCREEN_DISPLAY: scr = s_disp.scr; break;
+    default: return;
+    }
+    if (scr == NULL) {
+        return;
+    }
+    // 先注销再删:反过来的话,删除与下一次 refresh 之间会存在一个"指针已失效但仍
+    // 被登记"的窗口。
+    screen_forget(s);
+    lv_obj_delete(scr);
+}
+
+// 确保某屏幕已建成。返回它是否可用(建不出来 = 池不足)。
+static bool ensure_screen(sb_screen_t s)
+{
+    switch (s) {
+    case SB_SCREEN_HOME:      return s_home_scr != NULL;
+    case SB_SCREEN_PROVISION: return s_prov_scr != NULL;
+    case SB_SCREEN_HELP:
+        if (s_help_scr == NULL) {
+            build_help();
+        }
+        return s_help_scr != NULL;
+    default:
+        break;
+    }
+    list_page_t *p = NULL;
+    switch (s) {
+    case SB_SCREEN_MENU:    p = &s_menu; break;
+    case SB_SCREEN_NET:     p = &s_net; break;
+    case SB_SCREEN_REC:     p = &s_rec; break;
+    case SB_SCREEN_DEV:     p = &s_dev; break;
+    case SB_SCREEN_STORAGE: p = &s_stor; break;
+    case SB_SCREEN_DISPLAY: p = &s_disp; break;
+    default:                return false;
+    }
+    if (p->scr == NULL) {
+        page_build(p);
+    }
+    return p->scr != NULL;
+}
+
+// 离开某屏幕时,若它是懒加载页就释放掉。
+static void screen_release_if_lazy(sb_screen_t s)
+{
+    if (screen_is_lazy(s) && !screen_is_resident(s)) {
+        screen_release(s);
     }
 }
 

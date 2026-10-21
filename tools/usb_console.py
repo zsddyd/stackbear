@@ -111,6 +111,18 @@ def child_main(args: argparse.Namespace) -> int:
     ep_in, ep_out, iface = eb.get_cdc_endpoints(dev)
     eb.claim_device(dev, iface, fd_wrapped=True)
     eb.reset_endpoint_toggles(dev, ep_in, ep_out)
+    # --reset: pulse EN through the USB-Serial-JTAG peripheral before reading, so
+    # the capture starts at the first boot line. Without it, a device that has
+    # already hung (e.g. halted in the LVGL assert handler) never re-emits its
+    # boot log and the interesting lines are unrecoverable.
+    if args.reset:
+        try:
+            from nrflash import cdc_reset
+
+            cdc_reset.reset_to_app(dev, settle=0.2)
+            sys.stderr.write("[usb] reset pulsed; capturing from boot\n")
+        except Exception as exc:  # pragma: no cover - environment dependent
+            sys.stderr.write(f"[usb] reset failed ({exc}); reading as-is\n")
     sys.stderr.write(
         f"[usb] {eb.describe_device(dev)}  interface={iface}  ep_in=0x{ep_in:02X}\n"
     )
@@ -127,6 +139,11 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=0, help="stop after N seconds (0 = forever)")
     parser.add_argument("--save", help="also append the raw stream to this file")
     parser.add_argument("--raw", action="store_true", help="no timestamp prefix")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="pulse a hardware reset before reading, to capture the boot log",
+    )
     # Internal: the re-exec'd child receives the descriptor via TERMUX_USB_FD.
     if os.environ.get("TERMUX_USB_FD"):
         return child_main(parser.parse_args())
@@ -148,6 +165,8 @@ def main() -> int:
     passthrough = ["--seconds", str(args.seconds)]
     if args.raw:
         passthrough.append("--raw")
+    if args.reset:
+        passthrough.append("--reset")
     if args.save:
         passthrough += ["--save", args.save]
     cmd = " ".join(

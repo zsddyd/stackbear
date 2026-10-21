@@ -74,7 +74,7 @@ run_static_checks() {
     # 版本/提交号:身份串的两半必须在设备与 CI 两侧拼成同一个字符串,
     # 所以固定住宏的值,断言的期望与 make_ota_manifest.py 的模板一致。
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/stubs_esp \
-        -DSB_APP_VERSION='"0.7.7"' -DSB_GIT_COMMIT='"df4e58d1"' \
+        -DSB_APP_VERSION='"0.7.8"' -DSB_GIT_COMMIT='"df4e58d1"' \
         -DSB_GIT_BRANCH='"test"' -DSB_BUILD_TIME='"1970-01-01 00:00 UTC"' \
         tests/test_sb_version.c main/sb_version.c tests/stubs_esp/esp_ota_ops_stub.c \
         -o "${test_dir}/test_sb_version"
