@@ -8,6 +8,8 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "sb_display_cfg.h"
+
 static const char *TAG = "sb_config";
 static const char *NS = "stackbear";
 
@@ -79,6 +81,15 @@ esp_err_t sb_config_init(void)
     uint8_t cache_on = 0;
     nvs_get_u8(h, "cache_on", &cache_on);
     s_cfg.cache_enabled = (cache_on != 0);
+    // 亮度与调暗超时:读回的值可能是旧固件写的、或超出当前档位表的,一律用它
+    // 们的夹取/就近规则纠正 —— 存进去的一定是合法值,否则界面上会出现调不回去
+    // 的亮度或永远不触发的调暗。
+    uint8_t brightness = (uint8_t)SB_BRIGHT_DEFAULT;
+    nvs_get_u8(h, "bl_brt", &brightness);
+    s_cfg.brightness = (uint8_t)sb_bright_clamp(brightness);
+    uint16_t dim_s = (uint16_t)SB_DIM_PRESETS[SB_DIM_DEFAULT_INDEX];
+    nvs_get_u16(h, "bl_dim_s", &dim_s);
+    s_cfg.dim_timeout_s = SB_DIM_PRESETS[sb_dim_preset_index(dim_s)];
     nvs_commit(h);
     nvs_close(h);
     s_ready = true;
@@ -87,6 +98,8 @@ esp_err_t sb_config_init(void)
              s_cfg.ssid[0] ? s_cfg.ssid : "(未配网)");
     ESP_LOGI(TAG, "离线缓存: %s (上限 %u MB)",
              s_cfg.cache_enabled ? "开" : "关", (unsigned)s_cfg.cache_limit_mb);
+    ESP_LOGI(TAG, "显示: 亮度 %u%% 空闲调暗 %u 秒",
+             (unsigned)s_cfg.brightness, (unsigned)s_cfg.dim_timeout_s);
     return ESP_OK;
 }
 
@@ -173,6 +186,40 @@ esp_err_t sb_config_set_cache(bool enabled, uint8_t limit_mb)
     if (err == ESP_OK) {
         s_cfg.cache_enabled = enabled;
         s_cfg.cache_limit_mb = limit_mb;
+    }
+    return err;
+}
+
+esp_err_t sb_config_set_brightness(uint8_t percent)
+{
+    const uint8_t value = (uint8_t)sb_bright_clamp(percent);
+    nvs_handle_t h = open_ns();
+    if (h == 0) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    ESP_ERROR_CHECK(nvs_set_u8(h, "bl_brt", value));
+    esp_err_t err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        s_cfg.brightness = value;
+    }
+    return err;
+}
+
+esp_err_t sb_config_set_dim_timeout(uint16_t seconds)
+{
+    // 表外的值就近落位:界面只可能给出档位值,但 NVS 可以被人手工改过,
+    // 不能让一个任意秒数进来造成"超时永远不触发"或"立刻就暗"。
+    const uint16_t value = SB_DIM_PRESETS[sb_dim_preset_index(seconds)];
+    nvs_handle_t h = open_ns();
+    if (h == 0) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    ESP_ERROR_CHECK(nvs_set_u16(h, "bl_dim_s", value));
+    esp_err_t err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        s_cfg.dim_timeout_s = value;
     }
     return err;
 }

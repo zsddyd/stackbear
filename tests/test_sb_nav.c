@@ -25,6 +25,7 @@ static void test_parent_chain(void)
     CHECK(sb_nav_parent(SB_NAV_REC) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_DEV) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_STORAGE) == SB_NAV_MENU, "");
+    CHECK(sb_nav_parent(SB_NAV_DISPLAY) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_HELP) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_MENU) == SB_NAV_HOME, "");
     // 主页与配网页无处可退(长按返回应停在原页,不能把用户甩到空屏)。
@@ -49,16 +50,18 @@ static void test_parent_chain(void)
 static void test_menu_targets(void)
 {
     // 每行各自映射到它的子页,顺序由 sb_nav.h 的枚举决定(SETTINGS 页自上而下
-    // 是 Recorder / Network / Storage / Device / Help)。
+    // 是 Recorder / Network / Storage / Device / Display / Help)。
     CHECK(sb_nav_menu_target(SB_MENU_RECORDER) == SB_NAV_REC, "");
     CHECK(sb_nav_menu_target(SB_MENU_NETWORK) == SB_NAV_NET, "");
     CHECK(sb_nav_menu_target(SB_MENU_STORAGE) == SB_NAV_STORAGE, "");
     CHECK(sb_nav_menu_target(SB_MENU_DEVICE) == SB_NAV_DEV, "");
+    CHECK(sb_nav_menu_target(SB_MENU_DISPLAY) == SB_NAV_DISPLAY, "");
     CHECK(sb_nav_menu_target(SB_MENU_HELP) == SB_NAV_HELP, "");
     // 枚举顺序本身就是"页面上从上到下"的顺序,顺序错位会让 OK 进错页,所以把
     // 数值也钉住。
     CHECK(SB_MENU_RECORDER == 0 && SB_MENU_NETWORK == 1 && SB_MENU_STORAGE == 2 &&
-          SB_MENU_DEVICE == 3 && SB_MENU_HELP == 4, "menu order is the screen order");
+          SB_MENU_DEVICE == 3 && SB_MENU_DISPLAY == 4 && SB_MENU_HELP == 5,
+          "menu order is the screen order");
     // 越界不能崩,也不能跳到意外的页。
     CHECK(sb_nav_menu_target(-1) == SB_NAV_MENU, "");
     CHECK(sb_nav_menu_target(SB_MENU_ROWS) == SB_NAV_MENU, "");
@@ -66,17 +69,18 @@ static void test_menu_targets(void)
 
 static void test_rows_and_clamp(void)
 {
-    CHECK(sb_nav_rows(SB_NAV_MENU) == 5, "");
+    CHECK(sb_nav_rows(SB_NAV_MENU) == 6, "");
     CHECK(sb_nav_rows(SB_NAV_NET) == 5, "");
     CHECK(sb_nav_rows(SB_NAV_REC) == 4, "");
     CHECK(sb_nav_rows(SB_NAV_DEV) == 7, "");
     CHECK(sb_nav_rows(SB_NAV_STORAGE) == 5, "");
+    CHECK(sb_nav_rows(SB_NAV_DISPLAY) == 2, "");
     CHECK(sb_nav_rows(SB_NAV_HELP) == 0, "");        // 整页滚动文字,没有光标
     CHECK(sb_nav_rows(SB_NAV_HOME) == 0, "");        // 非列表页
     CHECK(sb_nav_rows(SB_NAV_PROVISION) == 0, "");
 
     // 光标在两端都不能溢出(多按几次上/下要停住,而不是绕回或越界)。
-    for (sb_nav_page_t p = SB_NAV_MENU; p <= SB_NAV_STORAGE; p++) {
+    for (sb_nav_page_t p = SB_NAV_MENU; p <= SB_NAV_DISPLAY; p++) {
         const int rows = sb_nav_rows(p);
         CHECK(sb_nav_clamp(p, -5) == 0, "clamp low");;
         CHECK(sb_nav_clamp(p, rows + 9) == rows - 1, "clamp high");;
@@ -107,6 +111,10 @@ static void test_actionable_rows(void)
     CHECK(!sb_nav_row_actionable(SB_NAV_STORAGE, 2), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_STORAGE, 3), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_STORAGE, 4), "");
+    // DISPLAY 两行都可操作(亮度行切换调节模式,调暗行循环档位)。
+    CHECK(sb_nav_row_actionable(SB_NAV_DISPLAY, 0), "");
+    CHECK(sb_nav_row_actionable(SB_NAV_DISPLAY, 1), "");
+    CHECK(!sb_nav_row_actionable(SB_NAV_DISPLAY, 2), "out of range");
     // 越界一律不可操作。
     CHECK(!sb_nav_row_actionable(SB_NAV_DEV, 7), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_STORAGE, -1), "");
@@ -120,7 +128,7 @@ static void test_actionable_rows(void)
 static void test_actionable_marker_contract(void)
 {
     int actionable_pages = 0;
-    for (sb_nav_page_t p = SB_NAV_MENU; p <= SB_NAV_STORAGE; p++) {
+    for (sb_nav_page_t p = SB_NAV_MENU; p <= SB_NAV_DISPLAY; p++) {
         const int rows = sb_nav_rows(p);
         int marked = 0;
         for (int r = 0; r < rows; r++) {
@@ -131,8 +139,9 @@ static void test_actionable_marker_contract(void)
             CHECK(marked == rows, "every menu row is actionable");
         }
     }
-    // 四个子页里 DEVICE 与 STORAGE 各有可操作行,菜单也有;NETWORK/RECORDER 没有。
-    CHECK(actionable_pages == 3, "exactly three pages carry actionable rows");
+    // 五个子页里 DEVICE / STORAGE / DISPLAY 各有可操作行,菜单也有;
+    // NETWORK/RECORDER 没有。
+    CHECK(actionable_pages == 4, "exactly four pages carry actionable rows");
 }
 
 int main(void)

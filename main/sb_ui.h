@@ -9,6 +9,7 @@
 //        ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
 //        ├ STORAGE   Cache / Size / Used / Pending / Dropped
 //        ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+//        ├ DISPLAY   Brightness / Dim after(OK 选中亮度后可上下调,长按下取消)
 //        └ HELP      只讲长按 UP 与长按 OK 两条(其余靠高亮自解释)
 //
 // 设计取舍:HOME 独占那个"聚合状态"(它融合了凭据/链路/暂停/上行四层判断),
@@ -29,6 +30,7 @@ typedef enum {
     SB_SCREEN_REC,
     SB_SCREEN_DEV,
     SB_SCREEN_STORAGE,
+    SB_SCREEN_DISPLAY,
     SB_SCREEN_HELP,
     SB_SCREEN_PROVISION,
 } sb_screen_t;
@@ -60,3 +62,7 @@ void sb_ui_back(void);          // 长按 DOWN:返回上一级
 
 // 当前行是否有动作(供界面提示与按键判断;无动作的行 OK 不响应)。
 bool sb_ui_row_actionable(void);
+
+// 上报"用户动了按键"。空闲调暗据此计算空闲时长,并立刻把背光恢复到用户设置的亮度。
+// 任何按键事件(含长按、配网页里的按键)都应调用它。
+void sb_ui_note_input(void);

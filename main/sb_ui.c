@@ -11,8 +11,10 @@
 #include <string.h>
 
 #include "bsp_battery.h"
+#include "bsp_display.h"
 #include "sb_cache.h"
 #include "sb_config.h"
+#include "sb_display_cfg.h"
 #include "sb_nav.h"
 #include "sb_net.h"
 #include "sb_ota.h"
@@ -77,7 +79,7 @@ static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font
 // 每个页面右上角都要有电量,所以它在这里统一创建 —— 而不是让每个页面自己记得加。
 // 曾经只有 HOME 有,用户一进子页就看不到电量了(而"还剩多少电"恰恰是子页里最想
 // 顺手确认的一件事)。每块屏幕是独立对象,不能共用一个标签,所以登记下来统一刷新。
-#define BATT_MAX_SCREENS 8   // HOME + 5 个设置页 + HELP + 配网
+#define BATT_MAX_SCREENS 9   // HOME + 6 个设置页 + HELP + 配网
 
 static lv_obj_t *s_batt_label[BATT_MAX_SCREENS];
 static int s_batt_count;
@@ -153,7 +155,7 @@ typedef struct {
     sb_scroll_t win;                      // 条目数 / 可视行数 / 光标 / 窗口起点
 } list_page_t;
 
-static list_page_t s_menu, s_net, s_rec, s_dev, s_stor;
+static list_page_t s_menu, s_net, s_rec, s_dev, s_stor, s_disp;
 
 // ---------------------------------------------------------------------------
 // 滚动条指示。列表页与 Help 页共用:只在"内容确实超出可视区"时出现,否则整条
@@ -615,11 +617,92 @@ static void build_help(void)
     }
 }
 
+// ---------------------------------------------------------------------------
+// DISPLAY:亮度与空闲调暗。
+//
+// 这一页和别的子页有一个结构上的差别:Brightness 行有**两种模式**。光标停在行上
+// 时 UP/DOWN 仍然是"移动光标"(与全工程一致),按 OK 才进入"调节模式";进入之后
+// UP/DOWN 变成增减亮度,再按 OK 或长按 DOWN 退出。之所以不直接把 UP/DOWN 绑成
+// 增减,是因为那样一进页面就会调亮度 —— 用户想下楼看调暗档位,手一滑就把亮度改了。
+//
+// 提示文字是必须的:这个模式切换是屏幕本身教不出来的第三件事(前两件是长按 UP /
+// 长按 OK,在 HELP 里),而 DISPLAY 页只有两行数据、下方本来就有空位。
+// ---------------------------------------------------------------------------
+
+#define DISPLAY_ROW_BRIGHT 0
+#define DISPLAY_ROW_DIM    1
+
+// 调节模式。跨按键回调与 LVGL 任务读写,标 volatile 以求稳妥。
+static volatile bool s_bright_adjust;
+
+// 背光"应该"处于的亮度。这是**唯一**的运行时亮度来源:界面显示它,空闲调暗恢复
+// 背光时也用它。按键线程(note_input)与 LVGL 任务都要读它,所以做成单个 volatile
+// 值 —— 若改成"调节期间读 A、平时读 B"的两处判断,按键线程就可能读到撕裂的组合,
+// 恢复出一个谁也没设过的亮度。
+//
+// 它和 NVS 的关系:按键每调一格只改这个 RAM 值(直接作用于背光),**离开调节模式
+// 时**才落一次盘。一次亮度调整最多走 18 步,每步一次 flash 擦写既拖慢按键手感、
+// 又白白消耗 NVS 擦写寿命(仓库里"离线缓存默认关闭"就是同一考虑)。
+static volatile uint8_t s_bright_live;
+
+// 把攒下的亮度落盘。只在与已保存值不同时才写,避免无谓的 flash 擦写。
+static void bright_commit(void)
+{
+    if (s_bright_live != sb_config_get()->brightness) {
+        (void)sb_config_set_brightness(s_bright_live);
+    }
+}
+
+// 行槽数只有 2,提示从第三行位置开始画。
+#define DISPLAY_HINT_Y0 (ROW_Y0 + 2 * ROW_PITCH + 6)
+
+// 三行提示都控制在 22 字符以内。取值区左起 x=22、右到 x=218(与 HELP 页同一版式),
+// 可用 196px;按 HELP 页实测的小写文本宽度("Start / stop" 12 字符 80px ≈
+// 6.7px/字符)折算,22 字符 ≈ 148px,余量充足。超宽会被屏幕右边缘裁掉,所以宁可写短句。
+static void build_display_hint(lv_obj_t *scr)
+{
+    static const char *lines[] = {
+        "OK: adjust brightness",
+        "UP / DOWN: change it",
+        "Hold DOWN: cancel",
+    };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *l = label(scr, lines[i], &lv_font_montserrat_14, C_MUTED);
+        lv_obj_set_pos(l, ROW_X + 10, DISPLAY_HINT_Y0 + i * 18);
+    }
+}
+
+// 空闲调暗的时间文案:0 档写 off,其余写成秒/分钟。
+static void dim_text(char *buf, size_t cap, uint16_t seconds)
+{
+    if (seconds == 0) {
+        strlcpy(buf, "off", cap);
+    } else if (seconds < 60) {
+        snprintf(buf, cap, "%u s", (unsigned)seconds);
+    } else {
+        snprintf(buf, cap, "%u min", (unsigned)(seconds / 60));
+    }
+}
+
+static void refresh_disp(void)
+{
+    char buf[24];
+
+    // 调节模式下把亮度值画成强调色,让"现在按上下是调它"在屏幕上有落点。
+    snprintf(buf, sizeof buf, "%u%%", (unsigned)s_bright_live);
+    page_set(&s_disp, DISPLAY_ROW_BRIGHT, buf,
+             s_bright_adjust ? C_ACCENT : C_TEXT);
+
+    dim_text(buf, sizeof buf, sb_config_get()->dim_timeout_s);
+    page_set(&s_disp, DISPLAY_ROW_DIM, buf, C_TEXT);
+}
+
 static void build_pages(void)
 {
-    // 顺序:Recorder / Network / Storage / Device / Help —— 最常看的排最前。
-    static const char *menu_names[] = {"Recorder", "Network", "Storage", "Device", "Help"};
-    page_init(&s_menu, SB_NAV_MENU, "SETTINGS", menu_names, 5);
+    // 顺序:Recorder / Network / Storage / Device / Display / Help —— 最常看的排最前。
+    static const char *menu_names[] = {"Recorder", "Network", "Storage", "Device",
+                                       "Display", "Help"};
+    page_init(&s_menu, SB_NAV_MENU, "SETTINGS", menu_names, 6);
 
     // 页面行数必须与 sb_nav(层级与光标边界的唯一事实来源)一致,否则光标会
     // 停到不存在的行、或漏掉最后一行。放在这里用编译期断言钉住。
@@ -648,6 +731,14 @@ static void build_pages(void)
     page_init(&s_stor, SB_NAV_STORAGE, "STORAGE", stor_names, 5);
     _Static_assert(sizeof(stor_names) / sizeof(stor_names[0]) ==
                        SB_NAV_STORAGE_ROWS, "storage row count must match sb_nav");
+
+    // DISPLAY:只有两行设置。列表页本身没有"提示区",而"OK 选中亮度后 UP/DOWN 变成
+    // 增减"这件事光看屏幕猜不出来,所以在行下方补两行静态提示(见 build_display_hint)。
+    static const char *disp_names[] = {"Brightness", "Dim after"};
+    page_init(&s_disp, SB_NAV_DISPLAY, "DISPLAY", disp_names, 2);
+    _Static_assert(sizeof(disp_names) / sizeof(disp_names[0]) ==
+                       SB_NAV_DISPLAY_ROWS, "display row count must match sb_nav");
+    build_display_hint(s_disp.scr);
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +770,9 @@ static void refresh_menu(void)
     }
     // 菜单上的摘要只给版本号:那里空间有限,提交号在 DEVICE 页里再看。
     page_set(&s_menu, SB_MENU_DEVICE, sb_version_number(), C_TEXT);
+    // DISPLAY 摘要给当前亮度:调暗过一次之后再进菜单也能一眼看出设的是多少。
+    page_set_fmt(&s_menu, SB_MENU_DISPLAY, C_TEXT, "%u%%",
+                 (unsigned)cfg->brightness);
     // Help 行不给右侧摘要:"Help" 本身就是完整的说明,再加一句摘要只是噪音。
     page_set(&s_menu, SB_MENU_HELP, "", C_TEXT);
 }
@@ -857,6 +951,7 @@ static page_refresh_fn refresh_for(sb_screen_t screen)
     case SB_SCREEN_REC:     return refresh_rec;
     case SB_SCREEN_DEV:     return refresh_dev;
     case SB_SCREEN_STORAGE: return refresh_stor;
+    case SB_SCREEN_DISPLAY: return refresh_disp;
     default:                return NULL;
     }
 }
@@ -867,9 +962,57 @@ static page_refresh_fn refresh_for(sb_screen_t screen)
 
 static sb_screen_t s_screen = SB_SCREEN_HOME;
 
+// ---------------------------------------------------------------------------
+// 空闲调暗
+//
+// 屏幕是本设备上最大的耗电项(常亮 100% + Wi-Fi 常连 + 连续录音)。原来只有启动时
+// 一次 bsp_display_backlight(100),之后再没有任何地方动过背光 —— 桌面放着也在满
+// 亮烧电,插着充电器时尤其明显(负载把充电电流吃掉了,电量还可能倒着走)。
+//
+// 这里不动页面内容,只动背光:空闲够久就压到 SB_DIM_LEVEL,任何一次按键立刻恢复到
+// 用户设置的亮度。调暗量取自配置,所以用户可以在 DISPLAY 页关掉(0 = 不调暗)或
+// 改成更长的超时。
+// ---------------------------------------------------------------------------
+
+// 按键线程(note_input)与 LVGL 任务(dim_tick)都会读写这两个值,标 volatile 以防
+// 被缓存 —— 否则按键重置的计时可能对定时器不可见,屏幕会在按键后仍然变暗。
+static volatile uint32_t s_last_input_ms;
+static volatile bool s_dimmed;
+
+// 任何按键都算"用户在动",包括长按与配网页里的按键。
+static void note_input(void)
+{
+    s_last_input_ms = lv_tick_get();
+    if (s_dimmed) {
+        // 立刻恢复到用户设置的亮度。恢复放在这里(按键线程)而不是定时器里,是为了
+        // 让第一次按键就有反应 —— 定时器最多要等 500ms,按下去半秒才亮会显得迟钝。
+        s_dimmed = false;
+        bsp_display_backlight(s_bright_live);
+    }
+}
+
+// 对外版本:main 的按键处理在每个事件上调用一次。它只读 lv_tick_get() 并可能改
+// LEDC 背光,不碰任何 lv_* 对象,所以**不需要** LVGL 锁 —— 按键线程可以安全地直接
+// 调用,从而让"按一下就亮"没有延迟。
+void sb_ui_note_input(void)
+{
+    note_input();
+}
+
+static void dim_tick(uint32_t now_ms)
+{
+    const sb_config_t *cfg = sb_config_get();
+    if (s_dimmed || !sb_dim_elapsed(now_ms, s_last_input_ms, cfg->dim_timeout_s)) {
+        return;
+    }
+    s_dimmed = true;
+    bsp_display_backlight(SB_DIM_LEVEL);
+}
+
 static void refresh(lv_timer_t *t)
 {
     (void)t;
+    dim_tick(lv_tick_get());
     uint32_t color = C_TEXT;
     const char *st = state_text(&color);
     if (s_home_state) {
@@ -906,6 +1049,7 @@ static void refresh(lv_timer_t *t)
     refresh_rec();
     refresh_dev();
     refresh_stor();
+    refresh_disp();
 
     // Branch 的跑马灯只在该行被选中时前进。refresh_dev() 已经按当前光标决定画什么
     // (选中=滚动,未选中=安全前缀),所以这里不需要额外判断。
@@ -921,6 +1065,11 @@ void sb_ui_init(void)
     build_pages();
     build_help();
     build_provision();
+    // 背光按用户保存的亮度启动,而不是每次开机都 100%。空闲计时从"刚初始化"起算,
+    // 于是开机后不会立刻把屏幕调暗。
+    s_bright_live = sb_config_get()->brightness;
+    s_last_input_ms = lv_tick_get();
+    bsp_display_backlight(s_bright_live);
     lv_timer_create(refresh, 500, NULL);
     refresh(NULL);   // 立即填一次,避免开屏是占位符
     lv_screen_load(s_home_scr);
@@ -929,6 +1078,14 @@ void sb_ui_init(void)
 
 void sb_ui_show(sb_screen_t screen)
 {
+    // 离开 DISPLAY 页时退出亮度调节模式:否则从别的页面回来时 UP/DOWN 会突然变成
+    // 增减亮度 —— 用户看不到头上那条"调节中"的强调色,只会觉得上下键坏了。
+    if (s_screen == SB_SCREEN_DISPLAY && screen != SB_SCREEN_DISPLAY) {
+        if (s_bright_adjust) {
+            bright_commit();
+        }
+        s_bright_adjust = false;
+    }
     s_screen = screen;
     switch (screen) {
     case SB_SCREEN_MENU:    lv_screen_load(s_menu.scr); break;
@@ -936,6 +1093,7 @@ void sb_ui_show(sb_screen_t screen)
     case SB_SCREEN_REC:     lv_screen_load(s_rec.scr); break;
     case SB_SCREEN_DEV:     lv_screen_load(s_dev.scr); break;
     case SB_SCREEN_STORAGE: lv_screen_load(s_stor.scr); break;
+    case SB_SCREEN_DISPLAY: lv_screen_load(s_disp.scr); break;
     case SB_SCREEN_HELP:    lv_screen_load(s_help_scr); break;
     case SB_SCREEN_PROVISION: lv_screen_load(s_prov_scr); break;
     default:                lv_screen_load(s_home_scr); s_screen = SB_SCREEN_HOME; break;
@@ -955,6 +1113,7 @@ static list_page_t *current_page(void)
     case SB_SCREEN_REC:     return &s_rec;
     case SB_SCREEN_DEV:     return &s_dev;
     case SB_SCREEN_STORAGE: return &s_stor;
+    case SB_SCREEN_DISPLAY: return &s_disp;
     default:                return NULL;
     }
 }
@@ -969,6 +1128,7 @@ static sb_nav_page_t to_nav(sb_screen_t s)
     case SB_SCREEN_REC:     return SB_NAV_REC;
     case SB_SCREEN_DEV:     return SB_NAV_DEV;
     case SB_SCREEN_STORAGE: return SB_NAV_STORAGE;
+    case SB_SCREEN_DISPLAY: return SB_NAV_DISPLAY;
     case SB_SCREEN_HELP:    return SB_NAV_HELP;
     case SB_SCREEN_PROVISION: return SB_NAV_PROVISION;
     default:                return SB_NAV_HOME;
@@ -983,6 +1143,7 @@ static sb_screen_t from_nav(sb_nav_page_t p)
     case SB_NAV_REC:     return SB_SCREEN_REC;
     case SB_NAV_DEV:     return SB_SCREEN_DEV;
     case SB_NAV_STORAGE: return SB_SCREEN_STORAGE;
+    case SB_NAV_DISPLAY: return SB_SCREEN_DISPLAY;
     case SB_NAV_HELP:    return SB_SCREEN_HELP;
     case SB_NAV_PROVISION: return SB_SCREEN_PROVISION;
     default:             return SB_SCREEN_HOME;
@@ -995,9 +1156,32 @@ void sb_ui_move(int delta)
         home_move(delta);
         return;
     }
+    // DISPLAY 的调节模式:UP/DOWN 不再是"移光标",而是"增减亮度"。这条分流必须
+    // 放在 page_move() 之前 —— 否则用户以为在调亮度,实际是光标上下跑。
+    if (s_screen == SB_SCREEN_DISPLAY && s_bright_adjust) {
+        // 只改 RAM 里的实时值并立刻作用于背光,NVS 留到退出调节模式时再写一次
+        // (见 bright_commit 的说明)。所以调亮度时按键是即时响应的,不夹带 flash 擦写。
+        const int next = sb_bright_step(s_bright_live, delta);
+        if (next != s_bright_live) {
+            s_bright_live = (uint8_t)next;
+            bsp_display_backlight((uint8_t)next);
+        }
+        refresh(NULL);   // 让数值立刻跟上,不等下一个 500ms
+        return;
+    }
     list_page_t *p = current_page();
     if (p != NULL) {
         page_move(p, delta, s_screen);
+    }
+}
+
+// 退出亮度调节模式。把攒下的亮度落盘并刷新显示(取消与"再按 OK"是同一个收尾动作)。
+static void cancel_adjust(void)
+{
+    if (s_bright_adjust) {
+        bright_commit();   // 取消也是"结束调节":攒下的亮度照样生效并落盘
+        s_bright_adjust = false;
+        refresh(NULL);
     }
 }
 
@@ -1049,6 +1233,24 @@ void sb_ui_activate(void)
         }
         break;
     }
+    case SB_SCREEN_DISPLAY: {
+        const sb_config_t *cfg = sb_config_get();
+        if (s_disp.win.cursor == DISPLAY_ROW_BRIGHT) {
+            // OK 切换"调节模式":进入后 UP/DOWN 变成增减亮度,再按 OK 退出。
+            if (s_bright_adjust) {
+                bright_commit();          // 退出:把攒下的亮度落盘一次
+                s_bright_adjust = false;
+            } else {
+                s_bright_live = cfg->brightness;   // 进入:从已保存值起步
+                s_bright_adjust = true;
+            }
+        } else {
+            // Dim after:OK 循环档位(0/30s/1min/3min/5min)。
+            const int idx = sb_dim_next_index(sb_dim_preset_index(cfg->dim_timeout_s));
+            (void)sb_config_set_dim_timeout(SB_DIM_PRESETS[idx]);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -1057,6 +1259,12 @@ void sb_ui_activate(void)
 
 void sb_ui_back(void)
 {
+    // 亮度调节模式里,长按 DOWN 先退出调节,而不是直接走人 —— 否则用户按住超过
+    // 500ms 就会被连人带页一起带走,刚调好的亮度还在、页面却没了。
+    if (s_screen == SB_SCREEN_DISPLAY && s_bright_adjust) {
+        cancel_adjust();
+        return;
+    }
     // 上一级同样由 sb_nav 决定:子页 -> 菜单 -> 主页;主页/配网页停在原地。
     sb_ui_show(from_nav(sb_nav_parent(to_nav(s_screen))));
 }

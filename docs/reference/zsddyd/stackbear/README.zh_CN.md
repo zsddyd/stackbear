@@ -33,7 +33,8 @@
   编解码 `main/sb_adpcm.c`;分帧 `main/sb_proto.c`;VAD `main/sb_vad.c`;
   WiFi/配网 `main/sb_net.c` 与 `main/sb_net_web.c`;上行 `main/sb_uplink.c`;
   NVS 配置 `main/sb_config.c`;离线队列 `main/sb_cache.c`;OTA `main/sb_ota.c`;
-  页面层级 `main/sb_nav.c`;构建信息 `main/sb_version.c`。
+  页面层级 `main/sb_nav.c`;背光/调暗规则 `main/sb_display_cfg.h`;
+  构建信息 `main/sb_version.c`。
 - 接收端工程在 `cloud/`,在 ECS 上用 `uv` 运行:
   `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`
   (或 `./run_server.sh`,日志直接写文件)。
@@ -52,11 +53,52 @@ HOME            聚合状态卡(启动时立即填充)+ SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     ├ DISPLAY   Brightness / Dim after
      └ HELP      三个长按按键说明(Hold UP / DOWN / OK)
 ```
 
 每个页面右上角都显示电量百分比。以前只有 HOME 有,一进子页就看不到;现在由公共的
 建屏函数统一创建并登记,电量也只在**一处**读取。
+
+### 背光与空闲调暗
+
+屏幕是这块板子上最大的单项耗电,而在 v0.7.6 之前固件只在启动时调过一次
+`bsp_display_backlight(100)`,之后再没有任何地方碰过背光 —— 设备放在桌上也在满亮
+烧电,同时还跑着 Wi-Fi 和连续录音。这份负载正是"插着电却像充不进去"的成因:充电 IC
+判断充满看的是**充电电流收尾**,负载一重就可能永远到不了指示灯重新点亮的那个点,
+电量计甚至会在插线状态下缓慢下降。
+
+现在有两件事管它:
+
+| 行为 | 细节 |
+| --- | --- |
+| 保存的亮度 | 用户选的亮度(`SB_BRIGHT_MIN` 10% .. `SB_BRIGHT_MAX` 100%,步进 5%)在开机与唤醒时生效,不再固定 100% |
+| 空闲调暗 | 空闲超时内没有按键,背光降到 `SB_DIM_LEVEL`(15%);下一次按键立刻恢复到保存的亮度 |
+
+下限刻意是 10% 而不是 0%:0% 背光与"设备已关机"在视觉上完全一样,用户把屏幕调到全黑
+后就再也找不到把它调回来的按键。调暗档位是 `0`(关闭)、30 秒、1 分钟、3 分钟、
+5 分钟,默认 1 分钟。档位表在 `main/sb_display_cfg.h`,是纯逻辑并有主机测试
+(`tests/test_sb_display_cfg.c`),覆盖最容易写错的几处边界:步进越过两端、把 NVS
+读回的非法值就近纠正、以及 `lv_tick` 约 49.7 天的回绕 —— 空闲判断用无符号差值,
+回绕不会被误读成"空闲了 49 天"而把屏幕突然压暗。
+
+`main/sb_config.c` 把这两项存进 NVS(`bl_brt`、`bl_dim_s`)。亮度是**调节结束时写一次**,
+不是每按一格写一次:一次完整调节最多 18 步,每步一次 flash 擦写既拖慢按键手感,又白白
+消耗 NVS 擦写寿命(与"离线缓存默认关闭"是同一考虑)。
+
+#### DISPLAY 页有一行是双模式
+
+`Brightness` 是全工程唯一一行有两种模式的:光标停在它上面时,UP/DOWN 仍然移动光标,
+与其它页面完全一致;按 OK 进入**调节模式**后 UP/DOWN 才变成增减亮度,数值同时画成强调
+色,让"现在按上下是调它"在屏幕上有落点。再按 OK、长按 DOWN、或离开本页都会退出。
+若把 UP/DOWN 直接绑成调亮度,只想往下滚到 `Dim after` 的用户第一下就把亮度改了。
+
+这是屏幕本身教不出来的第三件事(前两件是 HELP 里的两个长按),所以本页在数据行下方
+补了三行提示 —— 两行数据下方本来就有空位,而模式切换否则完全不可见。
+
+| 页面 | UP 轻点 | DOWN 轻点 | OK 轻点 | UP 长按 | DOWN 长按 | OK 长按 |
+| --- | --- | --- | --- | --- | --- | --- |
+| DISPLAY | 光标上移(调节模式下:变亮) | 光标下移(调节模式下:变暗) | 亮度行:切换调节模式;调暗行:循环档位 | — | 调节模式下取消调节,否则返回 SETTINGS | 进配网 |
 
 现在每个屏幕都是"选中 + 确认":UP/DOWN 移动高亮,OK 执行高亮那一行。这个手势在
 HOME(两行)、SETTINGS 和各个子页完全一致,于是只剩两条**屏幕本身教不出来**的手势
@@ -71,6 +113,7 @@ HOME(两行)、SETTINGS 和各个子页完全一致,于是只剩两条**屏幕�
 | RECORDER / NETWORK | 光标上移 | 光标下移 | —(纯展示) | — | 返回 SETTINGS | 进配网 |
 | STORAGE | 光标上移 | 光标下移 | 切换选中设置(仅 `Cache` 与 `Size`) | — | 返回 SETTINGS | 进配网 |
 | DEVICE | 光标上移 | 光标下移 | 执行选中动作(仅 `Check for update` 行) | — | 返回 SETTINGS | 进配网 |
+| DISPLAY | 光标上移(调节模式下:变亮) | 光标下移(调节模式下:变暗) | 亮度行:切换调节模式;调暗行:循环档位 | — | 调节模式下取消调节,否则返回 SETTINGS | 进配网 |
 | HELP | — | — | — | — | 返回 SETTINGS | 进配网 |
 | SETUP(配网) | — | — | — | — | 取消并返回 | 取消并返回 |
 
@@ -117,20 +160,69 @@ DEVICE 的取值不会越出自己的那一列。`Slot` 显示 `A`/`B`,不用内
 所以截断后的值绝不会爬到旁边的 Key 上;同一条路径也给过长的 OTA 失败原因收口。
 `Check for update` 不需要再写 `press OK`:它的名字已经用链接色画出来了。
 
+### 按键契约(已固化)
+
+上面的按键行为是**契约**,不是对当前构建的描述。以下是不得漂移的部分,以及每一处的
+约束位置。
+
+时序常量来自 `components/bsp/include/bsp_pins.h`,由 BSP 显式下发,不依赖组件的
+Kconfig 默认值:
+
+| 常量 | 取值 | 说明 |
+| --- | --- | --- |
+| `BSP_BTN_SHORT_PRESS_MS` | 180ms | 与组件默认一致 |
+| `BSP_BTN_LONG_PRESS_MS` | 500ms | 组件默认 1500ms;在这台三键小设备上按住 1.5 秒明显迟钝,故收敛 |
+
+光标的移动由 `main/sb_key_nav.h` 从原始的 `BSP_BTN_PRESS` / `BSP_BTN_RELEASE` 折算,
+**不用**组件的 `BSP_BTN_CLICK`。组件会把间隔小于短按窗口的连按合并成一次多击,并且只在
+多击结束时按次数派发 —— 1 次给 `CLICK`,2 次给 `DOUBLE`,3 次及以上什么都不派发 ——
+所以只认 `CLICK` 的列表页在快速连按时会**完全收不到事件**。改用 PRESS/RELEASE 折算后,
+无论连按多快,每一次物理按压都恰好产生一次移动;这也是不设双击手势的原因。已达到长按
+门限的那次按压,抬起时不算轻点 —— 否则"长按下返回"会先把光标挪一格再返回。
+
+固化的不变量:
+
+1. **所有页面同一套手势**。UP/DOWN 移高亮,OK 执行高亮那一行 —— 包括 HOME 的两行。
+   某个页面自创按键含义即为回归。
+2. **一次轻点只移动一行**,与连按快慢无关。
+3. **长按 DOWN 逐级返回**,HELP 与配网页也不例外;HOME 无处可退,忽略它。
+4. **长按 OK 是"进 / 出配网"的唯一全局开关**,任何页面都有效。
+5. **长按 UP 开始 / 停止录音,只在 HOME 生效**,与高亮停在哪一行无关。列表页**刻意
+   不**绑定它:停止是会话级操作并会封住音频文件,绑在浏览菜单时会诱发误停会话。
+6. **只读行按 OK 无动作**。例外只有这几行:STORAGE 的 `Cache` / `Size` 可切换,
+   DEVICE 的 `Check for update` 可触发,DISPLAY 的两行(亮度行切换调节模式、调暗行
+   循环档位)。可操作行的名字用强调色;HOME 只强调破坏性那一行(`Stop recording`
+   红色)与 `Settings`(强调色)。
+7. **行文字描述"按下去会怎样",而不是当前状态**:暂停时 HOME 第一行写
+   `Start recording`。
+8. **配网页是模态**。短按 UP/DOWN/OK 保持无效,屏幕上写明
+   (`hold DOWN or OK to exit`);只有长按 DOWN 或 OK 能退出。
+9. **HELP 没有光标** —— 那里没有可执行的东西。
+10. **聚合状态只在 HOME 出现**,融合凭据、链路、暂停与上行四层判断;子页不重复。
+11. **按键即"人还在"**。每个按键事件都重置空闲调暗计时,并立刻把背光恢复到保存的
+    亮度,配网页里的按键也算。调暗只动背光,不动页面内容。
+
+`main/sb_nav.{h,c}` 是页面层级的唯一事实来源:行数(以宏暴露,便于界面侧做编译期
+断言)、光标夹取、父级链、菜单跳转目标,以及哪些行可操作。`main/main.c` 的路由靠
+`sb_ui_current()` 查询**实时页面**,不维护第二份副本 —— 副本会与 `sb_ui_back()` /
+`sb_ui_activate()` 内部的跳转失步。`tests/test_sb_nav.c` 与
+`tests/test_sb_key_nav.c` 在主机上把这两半都钉住,任何破坏上述规则的改动会先测试失败,
+而不是直接发出去。
+
 ### 版本号与 commit:同一个身份,两半拼成
 
 设备与 OTA manifest 只比较**一个**字符串 —— 身份串:
 
 ```text
 身份串  = "v" + <版本号> + "+" + <8 位 commit>
-例如    = "v0.7.5+db020abb"
+例如    = "v0.7.6+db020abb"
 ```
 
 两半职责不同,所以来源也不同:
 
 | 半 | 来源 | 性质 |
 | --- | --- | --- |
-| 版本号(`0.7.5`) | `main/CMakeLists.txt` 里手写的 `set(SB_APP_VERSION ...)` | 给人看"这次改动多大" |
+| 版本号(`0.7.6`) | `main/CMakeLists.txt` 里手写的 `set(SB_APP_VERSION ...)` | 给人看"这次改动多大" |
 | commit(`db020abb`) | 构建时 `git rev-parse --short=8 HEAD` 自动注入 | 自动,且唯一性由 git 保证 |
 
 DEVICE 页把两半**分开显示**:`Firmware` 是纯版本号,`Commit` 是 8 位提交号,两者合起来
@@ -144,6 +236,24 @@ DEVICE 页把两半**分开显示**:`Firmware` 是纯版本号,`Commit` 是 8 �
 
 比较是"相等判断"而不是"大小判断":只要不同(包括 manifest 比设备**更旧**)就会下载并
 刷写。因此**回滚 = 用旧固件原来的身份串重新发布一遍**。
+
+## 时间:对外一律用 UTC+8
+
+Agent 所在主机与 ECS 接收端都跑在 UTC,但本项目**所有对用户呈现的时间都用 UTC+8
+(Asia/Shanghai,北京时间)**:包括回答"现在几点""今天/昨天"的范围、会话列表与转写
+时间。可能被误读时,明确写出时区。
+
+存储里的两种口径必须分清,不能混用:
+
+| 值 | 基准 | 例子 |
+| --- | --- | --- |
+| `meta.json` 的 `started_at` / `mtime` | Unix epoch,无时区 | `1792185498.98` |
+| 会话目录名 | **已经是本地 UTC+8** | `20261017-051818-cf4a` = 北京 05:18:18 |
+| `/health` 的 `ts` | Unix epoch | 与本机 epoch 对比 |
+
+接收端**没有设置 `TZ`**,所以它的 Python `datetime.now()` 是 UTC,而会话名却按 UTC+8
+写。把会话名再加 8 小时是很常见的错:会话名已经是北京时间,需要 +8 换算的是
+`started_at`。汇报前先做一次往返校验:`(epoch 按 UTC+8 解释) == 会话名`。
 
 ## 排查出来的工程结论
 
@@ -183,6 +293,12 @@ DEVICE 页把两半**分开显示**:`Firmware` 是纯版本号,`Commit` 是 8 �
     `"version": "..."`(中间有冒号),于是每次取值都失败,"Check for update" 在下载
     之前就报 `check failed`。现在会跳过分隔符、拒绝被截断的值(截断的 sha256 会让
     校验悄无声息地失效)并要求闭合引号;它独立成 `main/sb_json.[ch]` 并带回归测试。
+11. **一次 ASR 试验差点把 ECS 搞挂**。为了试方言识别,agent 把约 1GB 的
+    Qwen3-ASR-0.6B(ONNX 权重)下载并加载到了接收端主机上,而该机器只有 1.6GB 内存
+    和 4GB swap。模型把两者都吃满,机器进入 swap 抖动:SSH 连上但交换不了 banner,
+    接收端端口也不再响应,该主机上的其他无关服务一并受影响,最后只能手动重启才恢复。
+    **规则:不得自行部署模型。** 先量清楚模型体积、峰值内存、线程与磁盘需求,和目标
+    主机对照,取得用户明确确认后,才能在共享主机或生产主机上下载、安装或加载。
 
 ## 新增工具
 
@@ -195,6 +311,7 @@ DEVICE 页把两半**分开显示**:`Firmware` 是纯版本号,`Commit` 是 8 �
 可主机测试的逻辑都刻意从 LVGL/ESP-IDF 代码里剥离,由 `tests/test_sb_*.c` 覆盖:
 分帧(`sb_proto`)、VAD(`sb_vad`)、编解码(`sb_adpcm`)、离线槽位(`sb_cache_slot`)、
 清单解析(`sb_json`)、页面层级(`sb_nav`)、列表滚动窗口(`sb_scroll`)、按宽度截断与走马灯(`sb_text`)。
+背光与调暗规则(`sb_display_cfg`)。
 
 ## 界面设计说明(taste 规范)
 
@@ -251,6 +368,13 @@ STACKBEAR_ASR_LANGUAGE=zh
   (134 字和 79 字)。因此本地 provider 的 `STACKBEAR_ASR_CHUNK_MS` 默认 **8 秒**。
 - **要指定语言**。开启自动检测时,开头两个安静块在一段中文对话里被识别成英文
   ("B."、"After.");`STACKBEAR_ASR_LANGUAGE=zh` 消除了这个问题。
+
+SenseVoice-Small int8 常驻约 250~400MB,已经接近这台主机的上限:接收端 ECS 只有
+2 vCPU 与 1.6GB 内存,更大的模型放不下,加载一个就可能把该机器上的无关服务一起
+拖垮(见结论 11)。任何候选模型都要先量体积与峰值内存并与主机对照,部署前取得用户
+确认。方言识别已经调研过并搁置:SenseVoice 在中文方言里只覆盖粤语
+(`language=yue`),而试过的其他方言方案要么在这个体积下不可用(Dolphin base
+输出乱码),要么远超主机承载(Qwen3-ASR-0.6B,约 1GB)。
 
 ### 领域词表(提示词做不到的那部分)
 
@@ -367,6 +491,7 @@ worker 支持音频的池子里。
 Build:        PASS  (GitHub Actions,ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto、sb_vad、sb_adpcm、sb_cache_slot、sb_json、sb_nav、
                      sb_scroll(列表窗口)、sb_text(截断 / 走马灯)、
+                     sb_display_cfg(亮度步进 / 调暗档位 / tick 回绕)、
                      cloud 协议/adpcm/providers/server/autotranscribe/firmware、
                      仓库检查)
 Device tests: 核心链路 PASS

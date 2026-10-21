@@ -15,18 +15,20 @@ typedef enum {
     SB_NAV_REC,         // RECORDER
     SB_NAV_DEV,         // DEVICE
     SB_NAV_STORAGE,     // STORAGE
+    SB_NAV_DISPLAY,     // DISPLAY(亮度与空闲调暗)
     SB_NAV_HELP,        // HELP(整页滚动文字,没有光标)
     SB_NAV_PROVISION,   // 配网页(不参与常规导航层级)
     SB_NAV_PAGE_COUNT
 } sb_nav_page_t;
 
 // 分组菜单的行,顺序必须与 sb_ui.c 里的菜单文案一致。
-// 顺序按"最常看的排在前面"定:录音状态 → 网络 → 存储 → 设备 → 帮助。
+// 顺序按"最常看的排在前面"定:录音状态 → 网络 → 存储 → 设备 → 显示 → 帮助。
 typedef enum {
     SB_MENU_RECORDER = 0,
     SB_MENU_NETWORK,
     SB_MENU_STORAGE,
     SB_MENU_DEVICE,
+    SB_MENU_DISPLAY,
     SB_MENU_HELP,
     SB_MENU_ROWS
 } sb_menu_row_t;
@@ -37,6 +39,7 @@ typedef enum {
 #define SB_NAV_REC_ROWS     4
 #define SB_NAV_DEV_ROWS     7
 #define SB_NAV_STORAGE_ROWS 5
+#define SB_NAV_DISPLAY_ROWS 2
 
 // 该页有几行可停光标。非列表页返回 0。
 int sb_nav_rows(sb_nav_page_t page);

@@ -6,6 +6,7 @@
 #define REC_ROWS     SB_NAV_REC_ROWS
 #define DEV_ROWS     SB_NAV_DEV_ROWS
 #define STORAGE_ROWS SB_NAV_STORAGE_ROWS
+#define DISPLAY_ROWS SB_NAV_DISPLAY_ROWS
 
 #define DEV_ROW_OTA     6   // "Check for update"
 #define STORAGE_ROW_CACHE 0
@@ -19,6 +20,7 @@ int sb_nav_rows(sb_nav_page_t page)
     case SB_NAV_REC:     return REC_ROWS;
     case SB_NAV_DEV:     return DEV_ROWS;
     case SB_NAV_STORAGE: return STORAGE_ROWS;
+    case SB_NAV_DISPLAY: return DISPLAY_ROWS;
     case SB_NAV_HELP:    return 0;   // Help 是整页滚动文字,没有可停的光标
     default:             return 0;   // HOME / PROVISION 不是列表页
     }
@@ -48,6 +50,7 @@ sb_nav_page_t sb_nav_parent(sb_nav_page_t page)
     case SB_NAV_REC:
     case SB_NAV_DEV:
     case SB_NAV_STORAGE:
+    case SB_NAV_DISPLAY:
     case SB_NAV_HELP:
         return SB_NAV_MENU;          // 子页上一层是菜单
     default:
@@ -62,7 +65,8 @@ sb_nav_page_t sb_nav_menu_target(int row)
     case SB_MENU_NETWORK: return SB_NAV_NET;
     case SB_MENU_STORAGE: return SB_NAV_STORAGE;
     case SB_MENU_DEVICE: return SB_NAV_DEV;
-    case SB_MENU_HELP: return SB_NAV_HELP;
+    case SB_MENU_DISPLAY: return SB_NAV_DISPLAY;
+    case SB_MENU_HELP:    return SB_NAV_HELP;
     default: return SB_NAV_MENU;
     }
 }
@@ -79,6 +83,10 @@ bool sb_nav_row_actionable(sb_nav_page_t page, int row)
         return row == DEV_ROW_OTA;                     // 只有 Check for update
     case SB_NAV_STORAGE:
         return row == STORAGE_ROW_CACHE || row == STORAGE_ROW_SIZE;
+    case SB_NAV_DISPLAY:
+        // 亮度行与调暗行都"可操作",但含义不是"按一下切一下":OK 在亮度行上是
+        // 进入/退出调节模式,调暗行上是循环档位(见 sb_ui.c 的 sb_ui_activate)。
+        return true;
     default:
         return false;                                  // NET / REC 纯展示
     }

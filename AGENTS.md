@@ -29,6 +29,23 @@ retain the separate authorization requirements for flashing, Git writes, and pub
 ## Project and safety baseline
 
 - Target: ESP32-C3, 8 MB Flash, no PSRAM, ESP-IDF 5.5.3.
+- **All times mean UTC+8 (Asia/Shanghai, "Beijing time")** unless a source is
+  explicitly labelled otherwise. This covers user-requested date/time
+  questions, "today"/"yesterday" ranges, session and transcript listings, log
+  correlation, and anything reported back to the user. The agent host and the
+  ECS receiver may run in UTC — convert before reporting, and state the
+  timezone when it could be ambiguous. Recorded timestamps stay as stored
+  (UTC epochs and UTC+8 session names both exist); only presentation follows
+  this rule.
+- **Do not deploy, install or load a model on your own initiative** — local ASR,
+  embedding, LLM or vision models included. Investigate the requirement first
+  (artifact size, peak memory, CPU threads, disk, latency) and the target host's
+  capacity, report both to the user, and wait for explicit confirmation before
+  downloading, installing or loading anything. Never start such a step on a
+  shared, production or memory-constrained host without that confirmation. A
+  model that is comfortable on a workstation can take down a small host: an
+  unchecked local deployment once exhausted the receiver ECS's RAM and swap and
+  took unrelated services on that machine down with it.
 - Keep the repository's default partition table minimal: NVS, PHY data, and
   one factory application spanning the rest of the 8 MB Flash. User firmware
   may deliberately change this layout; validate the resulting table and do not

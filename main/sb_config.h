@@ -34,6 +34,10 @@ typedef struct {
     // 默认关闭,避免不做离线缓存时白白消耗 flash 擦写寿命。
     bool     cache_enabled;
     uint8_t  cache_limit_mb;   // 1..3,实际可用容量上限
+    // 背光常态亮度(%)与空闲调暗超时(秒)。取值域、步进与档位表都在
+    // main/sb_display_cfg.h —— 那里是纯逻辑并有主机测试,夹取规则只有一份。
+    uint8_t  brightness;       // SB_BRIGHT_MIN..SB_BRIGHT_MAX
+    uint16_t dim_timeout_s;    // 空闲这么多秒后调暗;0 = 不调暗
 } sb_config_t;
 
 // 初始化 NVS 命名空间并读入配置;缺失项用默认值补全(默认服务器来自编译期
@@ -54,3 +58,9 @@ esp_err_t sb_config_clear_wifi(void);
 
 // 离线音频队列设置。limit_mb 会被限制在 1..SB_CACHE_MAX_LIMIT_MB。
 esp_err_t sb_config_set_cache(bool enabled, uint8_t limit_mb);
+
+// 背光常态亮度(%)。percent 会被夹到 SB_BRIGHT_MIN..SB_BRIGHT_MAX。
+// 空闲调暗超时(秒),只接受 sb_display_cfg.h 档位表里的值,表外的值取最近档位;
+// 0 表示不调暗。
+esp_err_t sb_config_set_brightness(uint8_t percent);
+esp_err_t sb_config_set_dim_timeout(uint16_t seconds);

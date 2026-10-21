@@ -83,6 +83,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 static void handle_input(const input_event_t *in)
 {
+    // 任何按键都算"用户在动":重置空闲调暗计时,并把已经压暗的屏幕立刻恢复到
+    // 用户设置的亮度。放在最前面(早于配网页的提前 return),所以配网时按键也算,
+    // 不会出现"进了配网页屏幕就一直是暗的"。
+    sb_ui_note_input();
     // 先把上下键的"按下/长按/抬起"喂给轻点判定,配网页里也照喂:否则退出配网后
     // 可能留下一次陈旧的按下记录,抬起时算成轻点,产生一次幽灵移动。
     if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
@@ -158,7 +162,7 @@ static void handle_input(const input_event_t *in)
     // 上下键在那里没有作用,所以不在这里。
     const bool is_list = screen == SB_SCREEN_MENU || screen == SB_SCREEN_NET ||
                          screen == SB_SCREEN_REC || screen == SB_SCREEN_DEV ||
-                         screen == SB_SCREEN_STORAGE;
+                         screen == SB_SCREEN_STORAGE || screen == SB_SCREEN_DISPLAY;
     if (is_list) {
         // 列表页:UP/DOWN 每次轻点移动一格,OK 单击激活当前行。每一行是不是可操作
         // 由 UI 自己判断(见 sb_ui_row_actionable),上层不必知道"第几行是哪一项"。
@@ -324,7 +328,10 @@ void app_main(void)
         ESP_LOGE(TAG, "显示/LVGL 初始化失败,应用无法继续");
         return;
     }
-    bsp_display_backlight(100);
+    // 用用户保存的亮度点亮,而不是固定 100% —— 否则设过低亮度的用户在每次开机时
+    // 都会先被闪一下。sb_ui_init() 里还会再设一次(那里才是"界面就绪"的点),这里
+    // 先亮是为了让 LVGL 加锁失败时屏幕也不至于全黑。
+    bsp_display_backlight(sb_config_get()->brightness);
 
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
     if (s_input_queue == NULL) {

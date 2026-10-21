@@ -36,7 +36,8 @@ session for later transcription.
   VAD in `main/sb_vad.c`; Wi-Fi/provisioning in `main/sb_net.c` and
   `main/sb_net_web.c`; uplink in `main/sb_uplink.c`; NVS config in
   `main/sb_config.c`; offline queue in `main/sb_cache.c`; OTA in `main/sb_ota.c`;
-  page hierarchy in `main/sb_nav.c`; build identity in `main/sb_version.c`.
+  page hierarchy in `main/sb_nav.c`; backlight/dim rules in
+  `main/sb_display_cfg.h`; build identity in `main/sb_version.c`.
 - Receiver project: `cloud/`, run with `uv` on the ECS as
   `PYTHONPATH=$PWD/src .venv/bin/python -m stackbear.server --host 0.0.0.0 --port 18080`
   (or `./run_server.sh`, which logs straight to a file).
@@ -57,12 +58,65 @@ HOME            aggregate state card (fills at startup) + SEG/SENT/DROP
      ├ NETWORK   Wi-Fi / SSID / Device IP / Server IP / Uplink
      ├ STORAGE   Cache / Size / Used / Pending / Dropped
      ├ DEVICE    Device ID / Firmware / Slot / Commit / Branch / Built / update
+     ├ DISPLAY   Brightness / Dim after
      └ HELP      the three long-press gestures (Hold UP / DOWN / OK)
 ```
 
 Every screen shows the battery percentage in its top-right corner. It used to be
 on HOME only, so entering a sub-page hid it; the readout is now created and
 registered by the shared screen builder, and the fuel gauge is read in one place.
+
+### Backlight and idle dimming
+
+The screen is the largest single consumer on this board, and until v0.7.6 the
+firmware only ever called `bsp_display_backlight(100)` once at boot — nothing
+afterwards touched the backlight, so a device left on a desk burned full
+brightness while also running Wi-Fi and continuous recording. That load is what
+makes charging look broken: the charger's own end-of-charge detection is
+current-based, so a heavy load can keep the pack from ever reaching the point
+where the charging indicator lights again, and the gauge can even drift down
+while the cable is plugged in.
+
+Two things now manage it:
+
+| Behaviour | Detail |
+| --- | --- |
+| Saved brightness | The user's chosen level (`SB_BRIGHT_MIN` 10% .. `SB_BRIGHT_MAX` 100%, step 5%) is applied at boot and on any wake, instead of a fixed 100% |
+| Idle dimming | After the configured idle timeout with no key press, the backlight drops to `SB_DIM_LEVEL` (15%); the next key press restores the saved level |
+
+The floor is deliberately 10%, not 0%: a 0% backlight is visually
+indistinguishable from "powered off", and a user who dims to black can no longer
+find the keys to bring it back. The dim timeout presets are `0` (off), 30 s,
+1 min, 3 min and 5 min, with 1 min the default. The preset table lives in
+`main/sb_display_cfg.h`, which is pure and host-tested (`tests/test_sb_display_cfg.c`)
+across the boundaries that are easy to get wrong: stepping past either end,
+clamping a value read back from NVS to the nearest preset, and the `lv_tick`
+wrap at ~49.7 days — the idle check uses an unsigned difference, so a wrap
+cannot be misread as "idle for 49 days" and blank the screen.
+
+`main/sb_config.c` persists both settings in NVS (`bl_brt`, `bl_dim_s`). Brightness
+is written **once, when the adjustment ends**, not per key press: a full sweep is
+up to 18 steps, and one flash erase-write per step would both slow the key feel
+and waste NVS endurance (the same reasoning that keeps the offline queue
+disabled by default).
+
+#### The DISPLAY page has a two-mode row
+
+`Brightness` is the one row in the firmware with two modes. With the cursor on it,
+UP/DOWN still move the cursor, exactly like every other page; pressing OK enters
+*adjust mode*, where UP/DOWN now change the brightness and the value is drawn in
+the accent colour so the mode is visible on screen. OK again, long-press DOWN, or
+leaving the page exits it. Binding UP/DOWN directly to brightness would mean a
+user who just wanted to scroll down to `Dim after` changes the brightness on the
+first tap.
+
+This is the third gesture the screen cannot teach by itself (the other two are
+the long presses in HELP), so the page carries three hint lines below its two
+rows — it has the space, and the mode switch is otherwise invisible.
+
+| Page | UP tap | DOWN tap | OK tap | UP long | DOWN long | OK long |
+| --- | --- | --- | --- | --- | --- | --- |
+| DISPLAY | cursor up (adjust mode: brighter) | cursor down (adjust mode: dimmer) | brightness row: toggle adjust mode; dim row: cycle preset | — | adjust mode: cancel adjust, else back to SETTINGS | enter provisioning |
 
 Every screen is now select-and-confirm: UP/DOWN move the highlight, OK runs the
 highlighted row. That is the same gesture on HOME (two rows), SETTINGS and the
@@ -79,6 +133,7 @@ the meaning of "twice" depend on how fast the user pressed:
 | RECORDER / NETWORK | cursor up | cursor down | — (read-only) | — | back to SETTINGS | enter provisioning |
 | STORAGE | cursor up | cursor down | toggle the selected setting (only `Cache` and `Size`) | — | back to SETTINGS | enter provisioning |
 | DEVICE | cursor up | cursor down | run the selected action (only the `Check for update` row) | — | back to SETTINGS | enter provisioning |
+| DISPLAY | cursor up (adjust mode: brighter) | cursor down (adjust mode: dimmer) | brightness row: toggle adjust mode; dim row: cycle preset | — | adjust mode: cancel adjust, else back to SETTINGS | enter provisioning |
 | HELP | — | — | — | — | back to SETTINGS | enter provisioning |
 | SETUP (provisioning) | — | — | — | — | cancel and return | cancel and return |
 
@@ -140,20 +195,83 @@ beside it; long OTA failure reasons are clipped the same way. The `Check for
 update` row needs no `press OK` hint: its name is already drawn in the link
 colour.
 
+### Button contract (frozen)
+
+The key behaviour above is a contract, not a description of the current build.
+These are the parts that must not drift, and where each one is enforced.
+
+Timing comes from `components/bsp/include/bsp_pins.h`, pushed down by the BSP
+rather than left to the component's Kconfig defaults:
+
+| Constant | Value | Note |
+| --- | --- | --- |
+| `BSP_BTN_SHORT_PRESS_MS` | 180 ms | matches the component default |
+| `BSP_BTN_LONG_PRESS_MS` | 500 ms | the component default is 1500 ms; shortened because 1.5 s feels sluggish on a three-key device |
+
+Cursor movement is derived from raw `BSP_BTN_PRESS` / `BSP_BTN_RELEASE` in
+`main/sb_key_nav.h`, never from the component's `BSP_BTN_CLICK`. The component
+merges presses closer together than the short-press window into one multi-click
+sequence and dispatches only when that sequence ends — 1 click becomes `CLICK`,
+2 become `DOUBLE`, and 3 or more dispatch nothing at all — so a list driven by
+`CLICK` would ignore fast repeated presses entirely. Deriving the tap from
+PRESS/RELEASE makes every physical press produce exactly one move, however fast
+it is repeated, and is why no double-tap gesture exists. A press that reached
+the long-press threshold never counts as a tap on release, otherwise
+"long-press DOWN to go back" would first shift the cursor one row.
+
+The frozen invariants:
+
+1. **One gesture everywhere.** UP/DOWN move the highlight, OK runs the
+   highlighted row — on HOME's two rows too. A page that invents its own key
+   meaning is a regression.
+2. **A tap moves exactly one row**, regardless of repeat speed.
+3. **Long-press DOWN goes back one level**, on every page including HELP and
+   provisioning; HOME has nowhere to go and ignores it.
+4. **Long-press OK is the single global switch into and out of provisioning**,
+   valid on every page.
+5. **Long-press UP is start/stop recording, on HOME only**, and acts regardless
+   of where the highlight sits. It is deliberately *not* bound on any list page:
+   stopping is session-level and closes the audio file, so binding it where the
+   user browses menus invites an accidental session kill.
+6. **OK does nothing on a read-only row.** Exactly two rows override that:
+   STORAGE `Cache` / `Size` toggle, DEVICE `Check for update`, and both DISPLAY
+   rows (brightness toggles adjust mode, `Dim after` cycles the preset).
+   Actionable rows show their name in the accent colour; HOME marks only the
+   destructive row (`Stop recording`, red) and `Settings` (accent).
+7. **A row is labelled by what pressing it does**, not by current state: HOME's
+   first row reads `Start recording` while paused.
+8. **The provisioning page is modal.** Short UP/DOWN/OK are inert and the screen
+   says so (`hold DOWN or OK to exit`); only long-press DOWN or OK leave it.
+9. **HELP has no cursor** — there is nothing to run there.
+10. **Aggregate state lives only on HOME**, fusing credential, link, pause and
+    uplink; no sub-page repeats it.
+11. **A key press is a sign of life.** Every key event resets the idle-dimming
+    timer and restores the saved brightness immediately, including key presses on
+    the provisioning page. Dimming never changes page content, only the backlight.
+
+`main/sb_nav.{h,c}` is the single source of truth for the hierarchy: row counts
+(exposed as macros so the UI can static-assert them), the cursor clamp, the
+parent chain, the menu targets and which rows are actionable. `main/main.c`
+routes keys by querying the live page from `sb_ui_current()` instead of keeping
+a second copy, because a copy drifts out of sync with the jumps inside
+`sb_ui_back()` / `sb_ui_activate()`. `tests/test_sb_nav.c` and
+`tests/test_sb_key_nav.c` pin both halves on the host, so a change that breaks
+one of these rules fails a test instead of shipping.
+
 ### Version and commit: one identity, two halves
 
 The device and the OTA manifest compare exactly one string — the *identity*:
 
 ```text
 identity = "v" + <version number> + "+" + <8-character commit>
-example  = "v0.7.5+db020abb"
+example  = "v0.7.6+db020abb"
 ```
 
 The two halves have different jobs, so they come from different places:
 
 | Half | Source | Character |
 | --- | --- | --- |
-| Version number (`0.7.5`) | `set(SB_APP_VERSION ...)` in `main/CMakeLists.txt`, edited by hand | the human-facing "how big was this change" |
+| Version number (`0.7.6`) | `set(SB_APP_VERSION ...)` in `main/CMakeLists.txt`, edited by hand | the human-facing "how big was this change" |
 | Commit (`db020abb`) | `git rev-parse --short=8 HEAD`, injected by CMake | automatic, and the only part that is guaranteed unique |
 
 The DEVICE page shows the halves separately — `Firmware` is the bare version
@@ -173,6 +291,27 @@ firmware's format and `tests/test_ota_identity.py` pins the tool's; both expect
 Comparison is equality, not ordering: any difference (including an *older*
 manifest) triggers a download and flash. Rolling back therefore means
 re-publishing the older image under its original identity.
+
+## Time: everything the user sees is UTC+8
+
+The agent host and the ECS receiver both run in UTC, but this project reports
+**all times as UTC+8 (Asia/Shanghai, Beijing time)**. That includes answers to
+"what time is it", "today"/"yesterday" ranges, session listings and transcript
+timestamps. When a time could be misread, name the timezone explicitly.
+
+The stored data keeps both conventions and they must not be confused:
+
+| Value | Basis | Example |
+| --- | --- | --- |
+| `meta.json` `started_at` / `mtime` | Unix epoch, timezone-free | `1792185498.98` |
+| Session directory name | already **local UTC+8** | `20261017-051818-cf4a` = 05:18:18 Beijing |
+| `/health` `ts` | Unix epoch | compare against the host epoch |
+
+The receiver does **not** set `TZ`, so its Python `datetime.now()` is UTC while
+its session names are written with UTC+8. Converting a session name by adding 8
+hours again is a common mistake: the name is already Beijing time, while
+`started_at` needs the +8 conversion. Verify with a round trip before reporting:
+(epoch interpreted as UTC+8) must equal the session name.
 
 ## Hand-won engineering findings
 
@@ -229,6 +368,16 @@ These were all found with the on-device console tool, in this order:
     separator, refuses truncated values (a clipped sha256 would silently break
     verification) and requires a closing quote; it lives in `main/sb_json.[ch]`
     with a regression test.
+11. **An ASR experiment nearly took the ECS down.** Seeking better dialect
+    handling, an agent downloaded and loaded Qwen3-ASR-0.6B (about 1 GB of ONNX
+    weights) onto the receiver host, which has 1.6 GB of RAM and 4 GB of swap.
+    The model exhausted both, the machine fell into swap thrash, SSH stopped
+    completing its banner and the receiver's port stopped answering - unrelated
+    services on that host were affected too, and only a manual reboot recovered
+    it. **Rule: do not deploy a model on your own initiative.** Measure the
+    artifact size, peak memory, thread and disk needs, compare them against the
+    target host, and get the user's explicit confirmation before downloading,
+    installing or loading anything on a shared or production machine.
 
 ## Tooling added
 
@@ -242,7 +391,8 @@ Host-testable logic is deliberately split out of the LVGL/ESP-IDF code and
 covered by `tests/test_sb_*.c`: framing (`sb_proto`), VAD (`sb_vad`), codec
 (`sb_adpcm`), offline-slot codec (`sb_cache_slot`), manifest parsing
 (`sb_json`), page hierarchy (`sb_nav`), the list scroll window (`sb_scroll`) and
-width-aware text clipping / marquee (`sb_text`).
+width-aware text clipping / marquee (`sb_text`), and the backlight/dim rules
+(`sb_display_cfg`).
 
 ## UI design notes (taste house style)
 
@@ -309,6 +459,16 @@ transcribes in about 9 s at ~250-400 MB RSS. Two findings from measuring it:
 - **Pin the language.** With auto-detection the two quiet opening blocks came
   back as English ("B.", "After.") inside an otherwise Chinese conversation;
   `STACKBEAR_ASR_LANGUAGE=zh` removes that.
+
+SenseVoice-Small int8 at ~250-400 MB RSS is already close to this host's
+ceiling: the receiver ECS has 2 vCPU and 1.6 GB of RAM, so a larger model does
+not fit, and loading one can take unrelated services on that machine down
+(finding 11). Measure any candidate model's size and peak memory against the
+host, and confirm with the user before deploying it. Dialect recognition was
+investigated and shelved: SenseVoice covers only Cantonese (`language=yue`)
+among Chinese dialects, and the dialect-capable alternatives tried were either
+unusable at this size (Dolphin base produced garbage output) or far too large
+for the host (Qwen3-ASR-0.6B, ~1 GB).
 
 ### Domain vocabulary (the part a prompt cannot do)
 
@@ -458,6 +618,7 @@ names only, so a request cannot escape the directory.
 Build:        PASS  (GitHub Actions, ESP-IDF 5.5.3 / esp32c3)
 Host tests:   PASS  (sb_proto, sb_vad, sb_adpcm, sb_cache_slot, sb_json, sb_nav,
                      sb_scroll (list window), sb_text (clip / marquee),
+                     sb_display_cfg (brightness step / dim preset / tick wrap),
                      cloud protocol/adpcm/providers/server/autotranscribe/firmware,
                      repo checks)
 Device tests: PASS for the core path
