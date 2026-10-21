@@ -17,7 +17,7 @@
 static void test_number_is_bare(void)
 {
     // "Firmware" 行显示的就是它:不带 v、不带 commit。
-    assert(strcmp(sb_version_number(), "0.7.6") == 0);
+    assert(strcmp(sb_version_number(), "0.7.7") == 0);
     assert(strchr(sb_version_number(), '+') == NULL);
 }
 
@@ -33,7 +33,7 @@ static void test_commit_is_eight_hex_digits(void)
 static void test_identity_is_the_two_halves(void)
 {
     const char *id = sb_version_short();
-    assert(strcmp(id, "v0.7.6+df4e58d1") == 0);
+    assert(strcmp(id, "v0.7.7+df4e58d1") == 0);
     // 身份串必须**恰好**是 "v" + 版本号 + "+" + 提交号,不能再有别的截断。
     char expect[64];
     snprintf(expect, sizeof expect, "v%s+%s", sb_version_number(), sb_version_commit());

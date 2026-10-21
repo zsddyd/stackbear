@@ -12,6 +12,7 @@
 
 #include "bsp_battery.h"
 #include "bsp_display.h"
+#include "esp_log.h"
 #include "sb_cache.h"
 #include "sb_config.h"
 #include "sb_display_cfg.h"
@@ -23,6 +24,36 @@
 #include "sb_text.h"
 #include "sb_uplink.h"
 #include "sb_version.h"
+
+static const char *TAG = "sb_ui";
+
+// ---------------------------------------------------------------------------
+// LVGL 池余量观测。
+//
+// 为什么需要它:LVGL 的静态池(见 sdkconfig.defaults 的 CONFIG_LV_MEM_SIZE)用尽时
+// 不会崩溃报错 —— lv_malloc 返回 NULL,而池内多处调用(例如 lv_draw_add_task 写
+// new_task->area)不检查返回值,直接写 NULL+偏移,于是表现为一次莫名的
+// "Store access fault" 复位,而不是一句"内存不够"。
+//
+// 这块板子没有 PSRAM,池大小是静态切走的、不与系统堆共享,所以唯一的判据是实测:
+// free_size 是当前余量,free_biggest_size 是**最大连续块**(决定"还能不能放下一个
+// 大对象",比 free_size 更贴近崩溃条件),max_used 是历史高水位。三者一起看才分得清
+// "池太小"和"碎片太多"。
+//
+// 用 ESP_LOGI 而不是 LVGL 自己的日志:两者互补 —— LVGL 日志(现已开启,见
+// sdkconfig.defaults)只在失败那一刻说话,而这几行是**主动采样**,开机就能看到
+// 余量趋势,不必等到崩了才有数据。
+// ---------------------------------------------------------------------------
+static void ui_mem_log(const char *where)
+{
+    lv_mem_monitor_t m;
+    lv_mem_monitor(&m);
+    ESP_LOGI(TAG, "LVGL 池[%s]: 总 %u B 空闲 %u B 最大连续 %u B 峰值 %u B "
+                  "(已用 %u%%,碎片 %u%%)",
+             where, (unsigned)m.total_size, (unsigned)m.free_size,
+             (unsigned)m.free_biggest_size, (unsigned)m.max_used,
+             (unsigned)m.used_pct, (unsigned)m.frag_pct);
+}
 
 // 调色板:一个地面、一个墨色、一个强调色 —— 不做渐变/发光/阴影。
 #define C_BG      0x0E1216
@@ -54,9 +85,30 @@
 // 通用控件
 // ---------------------------------------------------------------------------
 
+// 三个控件工厂的 NULL 约定:创建失败时 lv_obj_create()/lv_label_create() 返回 NULL。
+// 后续的 lv_obj_set_*(o, ...) 内部虽有 LV_CHECK_OBJ 判空(默认 LV_USE_CHECK_ARG=y),
+// 但**返回值会被继续使用**的地方(如把自己存进 s_batt_label[]、s_home_state 等句柄,
+// 再由 refresh() 每 500ms 解引用)仍会踩空指针。所以工厂统一返回 NULL,调用点要么
+// 接受"这个控件没画出来",要么显式判空。
+//
+// 与断言的关系:sdkconfig.defaults 现在开了 CONFIG_LV_USE_ASSERT_MALLOC,池耗尽时
+// LVGL 会在 lv_malloc 处先断言停机并打印 "Out of memory"(可诊断),这些判空因此是
+// **第二道防线**;若将来关掉断言(或失败来自非池原因),它们就是唯一的防线。
+//
+// 注意:这些判空**挡不住** LVGL 内部不检查返回值的路径(例如渲染时的
+// lv_draw_add_task,见 v0.7.6 那次 Store access fault)。那类路径只能靠断言暴露、
+// 靠"池足够大"避免 —— 所以真正的修复仍然是让池够用(见 ui_mem_log 的实测)。
 static lv_obj_t *card(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color)
 {
+    // 同 label():parent == NULL 会被 LVGL 当成"创建屏幕",必须挡在这里。
+    if (parent == NULL) {
+        return NULL;
+    }
     lv_obj_t *o = lv_obj_create(parent);
+    if (o == NULL) {
+        ESP_LOGE(TAG, "创建卡片失败(池耗尽): %dx%d", w, h);
+        return NULL;
+    }
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(o, x, y);
     lv_obj_set_size(o, w, h);
@@ -69,7 +121,16 @@ static lv_obj_t *card(lv_obj_t *parent, int x, int y, int w, int h, uint32_t col
 
 static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font, uint32_t color)
 {
+    // parent == NULL 必须挡在这里:LVGL 把"父对象为 NULL"解释成"创建一个屏幕",
+    // 于是上游一次失败的创建会在这里变出一个游离屏幕对象,而不是安静地失败。
+    if (parent == NULL) {
+        return NULL;
+    }
     lv_obj_t *l = lv_label_create(parent);
+    if (l == NULL) {
+        ESP_LOGE(TAG, "创建文本失败(池耗尽): \"%s\"", text);
+        return NULL;
+    }
     lv_label_set_text(l, text);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
@@ -87,17 +148,25 @@ static int s_batt_count;
 static lv_obj_t *base_screen(const char *title)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
+    if (scr == NULL) {
+        ESP_LOGE(TAG, "创建屏幕失败(池耗尽): %s", title);
+        return NULL;
+    }
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_t *t = label(scr, title, &lv_font_montserrat_14, C_MUTED);
-    lv_obj_set_pos(t, 12, 10);
+    if (t != NULL) {
+        lv_obj_set_pos(t, 12, 10);
+    }
 
     lv_obj_t *b = label(scr, "--%", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -12, 10);
-    if (s_batt_count < BATT_MAX_SCREENS) {
-        s_batt_label[s_batt_count++] = b;
+    if (b != NULL) {
+        lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -12, 10);
+        if (s_batt_count < BATT_MAX_SCREENS) {
+            s_batt_label[s_batt_count++] = b;
+        }
     }
     return scr;
 }
@@ -108,6 +177,9 @@ static void battery_refresh(void)
 {
     const int soc = bsp_battery_soc();
     for (int i = 0; i < s_batt_count; i++) {
+        if (s_batt_label[i] == NULL) {
+            continue;   // 该页的电量标签没建出来(池耗尽)
+        }
         if (soc < 0) {
             lv_label_set_text(s_batt_label[i], "--%");
         } else {
@@ -215,8 +287,14 @@ static void bar_create(lv_obj_t *parent, uint32_t track_color, uint32_t thumb_co
 {
     lv_obj_t *t = card(parent, BAR_X, BAR_TRACK_Y, BAR_W, track_h, track_color);
     lv_obj_t *b = card(parent, BAR_X, BAR_TRACK_Y, BAR_W, BAR_MIN_H, thumb_color);
-    lv_obj_set_hidden(t, true);
-    lv_obj_set_hidden(b, true);
+    // 两者可能都是 NULL(card() 已判空并打过日志);bar_apply() 自己能处理 NULL,
+    // 这里只需避免对 NULL 调 lv_obj_set_hidden。
+    if (t != NULL) {
+        lv_obj_set_hidden(t, true);
+    }
+    if (b != NULL) {
+        lv_obj_set_hidden(b, true);
+    }
     *track_out = t;
     *thumb_out = b;
 }
@@ -224,7 +302,13 @@ static void bar_create(lv_obj_t *parent, uint32_t track_color, uint32_t thumb_co
 // 一行的底色矩形。只负责画那一行的卡片轮廓,不承载子对象。
 static lv_obj_t *row_bg(lv_obj_t *parent, int y)
 {
+    if (parent == NULL) {
+        return NULL;
+    }
     lv_obj_t *o = lv_obj_create(parent);
+    if (o == NULL) {
+        return NULL;
+    }
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(o, ROW_X, y);
     lv_obj_set_size(o, ROW_W, ROW_H);
@@ -283,6 +367,20 @@ static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
     p->win.scroll = 0;
     sb_scroll_follow(&p->win);
     p->scr = base_screen(title);
+    // 屏幕没建出来时,后续所有 lv_obj_create(p->scr) 都会把 NULL 父对象解释成
+    // "再建一个屏幕" —— 那不是失败,而是悄悄多出几个游离屏幕对象,比直接失败更糟。
+    // 所以这里必须早退,把整页留成"空页"。
+    if (p->scr == NULL) {
+        p->sel = NULL;
+        p->bar_track = NULL;
+        p->bar_thumb = NULL;
+        for (int i = 0; i < p->slots; i++) {
+            p->rows[i] = NULL;
+            p->names[i] = NULL;
+            p->vals[i] = NULL;
+        }
+        return;
+    }
 
     // 第 1 层:行槽的卡片底色。槽数 = 该页可视行数,与滚动无关。
     for (int i = 0; i < p->slots; i++) {
@@ -294,13 +392,15 @@ static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
     // 行底色完全一致(同样的 x/y/w/h 与圆角),视觉上等同于把那一行的底色换成
     // C_SEL,但它是一个可以整体缓动的独立对象。
     p->sel = lv_obj_create(p->scr);
-    lv_obj_remove_flag(p->sel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(p->sel, ROW_X, ROW_Y0);
-    lv_obj_set_size(p->sel, ROW_W, ROW_H);
-    lv_obj_set_style_radius(p->sel, 10, 0);
-    lv_obj_set_style_border_width(p->sel, 0, 0);
-    lv_obj_set_style_pad_all(p->sel, 0, 0);
-    lv_obj_set_style_bg_color(p->sel, lv_color_hex(C_SEL), 0);
+    if (p->sel != NULL) {
+        lv_obj_remove_flag(p->sel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(p->sel, ROW_X, ROW_Y0);
+        lv_obj_set_size(p->sel, ROW_W, ROW_H);
+        lv_obj_set_style_radius(p->sel, 10, 0);
+        lv_obj_set_style_border_width(p->sel, 0, 0);
+        lv_obj_set_style_pad_all(p->sel, 0, 0);
+        lv_obj_set_style_bg_color(p->sel, lv_color_hex(C_SEL), 0);
+    }
 
     // 第 3 层:标签。挂在屏幕上(而非行底色里)才能绘制在高亮之上。
     for (int i = 0; i < p->slots; i++) {
@@ -308,14 +408,18 @@ static void page_init(list_page_t *p, sb_nav_page_t nav, const char *title,
         const int y_c = ROW_Y0 + i * ROW_PITCH + ROW_H / 2;
         p->names[i] = label(p->scr, "", &lv_font_montserrat_14, C_MUTED);
         lv_obj_t *n = p->names[i];
-        lv_obj_align(n, LV_ALIGN_TOP_LEFT, ROW_X + 10,
-                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        if (n != NULL) {
+            lv_obj_align(n, LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        }
         p->vals[i] = label(p->scr, "", &lv_font_montserrat_14, C_TEXT);
         // 右边缘对齐到行右侧内缩 10px 处。偏移量从屏幕右边缘往前算,所以不写死
         // 屏幕宽度:屏幕是 240 宽时 240-(12+216-10)=22。
-        lv_obj_align(p->vals[i], LV_ALIGN_TOP_RIGHT,
-                     -(lv_obj_get_width(p->scr) - (ROW_X + ROW_W - 10)),
-                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        if (p->vals[i] != NULL) {
+            lv_obj_align(p->vals[i], LV_ALIGN_TOP_RIGHT,
+                         -(lv_obj_get_width(p->scr) - (ROW_X + ROW_W - 10)),
+                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        }
     }
 
     bar_create(p->scr, C_CARD, C_SEL, BAR_ROW_H, &p->bar_track, &p->bar_thumb);
@@ -420,24 +524,35 @@ static int s_home_cursor;
 static void build_home(void)
 {
     s_home_scr = base_screen("STACKBEAR RECORDER");   // 右上角的电量由 base_screen 建
+    if (s_home_scr == NULL) {
+        return;   // 池已耗尽:不建 HOME,由 sb_ui_init 的日志说明原因
+    }
 
     lv_obj_t *c = card(s_home_scr, 12, 44, 216, 124, C_CARD);
     s_home_state = label(c, "STARTING", &lv_font_montserrat_20, C_TEXT);
-    lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 34);
+    if (s_home_state != NULL) {
+        lv_obj_align(s_home_state, LV_ALIGN_TOP_MID, 0, 34);
+    }
     s_home_sub = label(c, "", &lv_font_montserrat_14, C_MUTED);
-    lv_label_set_long_mode(s_home_sub, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_home_sub, 196);
-    lv_obj_set_style_text_align(s_home_sub, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -12);
+    if (s_home_sub != NULL) {
+        lv_label_set_long_mode(s_home_sub, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_home_sub, 196);
+        lv_obj_set_style_text_align(s_home_sub, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(s_home_sub, LV_ALIGN_BOTTOM_MID, 0, -12);
+    }
 
     static const char *caps[3] = {"SEG", "SENT", "DROP"};
     lv_obj_t **vals[3] = {&s_home_seg, &s_home_sent, &s_home_drop};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *k = card(s_home_scr, 12 + i * 74, 178, 68, 56, C_CARD);
-        label(k, caps[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_align(lv_obj_get_child(k, 0), LV_ALIGN_TOP_MID, 0, 6);
+        lv_obj_t *cap = label(k, caps[i], &lv_font_montserrat_14, C_MUTED);
+        if (cap != NULL) {
+            lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 6);
+        }
         *vals[i] = label(k, "0", &lv_font_montserrat_14, C_TEXT);
-        lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_MID, 0, -8);
+        if (*vals[i] != NULL) {
+            lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_MID, 0, -8);
+        }
     }
 
     // 两行可选动作。和高亮/标签的层次一样:底色 -> 高亮 -> 标签,标签挂屏幕才盖得住
@@ -449,19 +564,23 @@ static void build_home(void)
         (void)row_bg(s_home_scr, HOME_ROW_Y0 + i * ROW_PITCH);
     }
     s_home_sel = lv_obj_create(s_home_scr);
-    lv_obj_remove_flag(s_home_sel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(s_home_sel, ROW_X, HOME_ROW_Y0);
-    lv_obj_set_size(s_home_sel, ROW_W, ROW_H);
-    lv_obj_set_style_radius(s_home_sel, 10, 0);
-    lv_obj_set_style_border_width(s_home_sel, 0, 0);
-    lv_obj_set_style_pad_all(s_home_sel, 0, 0);
-    lv_obj_set_style_bg_color(s_home_sel, lv_color_hex(C_SEL), 0);
+    if (s_home_sel != NULL) {
+        lv_obj_remove_flag(s_home_sel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(s_home_sel, ROW_X, HOME_ROW_Y0);
+        lv_obj_set_size(s_home_sel, ROW_W, ROW_H);
+        lv_obj_set_style_radius(s_home_sel, 10, 0);
+        lv_obj_set_style_border_width(s_home_sel, 0, 0);
+        lv_obj_set_style_pad_all(s_home_sel, 0, 0);
+        lv_obj_set_style_bg_color(s_home_sel, lv_color_hex(C_SEL), 0);
+    }
     for (int i = 0; i < HOME_ROWS; i++) {
         const int y_c = HOME_ROW_Y0 + i * ROW_PITCH + ROW_H / 2;
         s_home_row_name[i] = label(s_home_scr, names[i], &lv_font_montserrat_14,
                                    i == 0 ? C_DANGER : C_ACCENT);
-        lv_obj_align(s_home_row_name[i], LV_ALIGN_TOP_LEFT, ROW_X + 10,
-                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        if (s_home_row_name[i] != NULL) {
+            lv_obj_align(s_home_row_name[i], LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        }
     }
     s_home_cursor = 0;
 }
@@ -553,24 +672,39 @@ static char s_ap_name[40] = "";
 static void build_provision(void)
 {
     s_prov_scr = base_screen("SETUP MODE");
+    if (s_prov_scr == NULL) {
+        return;
+    }
     lv_obj_t *c = card(s_prov_scr, 12, 44, 216, 176, C_CARD);
     lv_obj_t *l1 = label(c, "Join this Wi-Fi hotspot:", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(l1, LV_ALIGN_TOP_LEFT, 14, 14);
+    if (l1 != NULL) {
+        lv_obj_align(l1, LV_ALIGN_TOP_LEFT, 14, 14);
+    }
     s_prov_ap = label(c, "Passport-XXXX", &lv_font_montserrat_20, C_OK);
-    lv_obj_align(s_prov_ap, LV_ALIGN_TOP_LEFT, 14, 40);
+    if (s_prov_ap != NULL) {
+        lv_obj_align(s_prov_ap, LV_ALIGN_TOP_LEFT, 14, 40);
+    }
     lv_obj_t *l2 = label(c, "Password: passport1234", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_align(l2, LV_ALIGN_TOP_LEFT, 14, 74);
+    if (l2 != NULL) {
+        lv_obj_align(l2, LV_ALIGN_TOP_LEFT, 14, 74);
+    }
     lv_obj_t *l3 = label(c, "Then open in a browser:", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(l3, LV_ALIGN_TOP_LEFT, 14, 104);
+    if (l3 != NULL) {
+        lv_obj_align(l3, LV_ALIGN_TOP_LEFT, 14, 104);
+    }
     lv_obj_t *l4 = label(c, "http://192.168.4.1/", &lv_font_montserrat_14, C_ACCENT);
-    lv_obj_align(l4, LV_ALIGN_TOP_LEFT, 14, 128);
+    if (l4 != NULL) {
+        lv_obj_align(l4, LV_ALIGN_TOP_LEFT, 14, 128);
+    }
     // 配网页是模态:UP/DOWN 与 OK 短按在这里刻意不做事。退出方式必须写在屏幕上,
     // 否则用户按上/下没有反应会以为设备卡住了(其他每个页面它们都有作用)。
     // 主推长按 DOWN —— 与其它页面的"长按返回"一致;长按 OK 也保留(它是进/出配网
     // 的同一个开关),所以文案里带上它。
     lv_obj_t *hint = label(s_prov_scr, "hold DOWN or OK to exit",
                            &lv_font_montserrat_14, C_MUTED);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+    if (hint != NULL) {
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -602,18 +736,25 @@ static const char *const HELP_VALUES[] = {"Start / stop", "Back a level", "Set u
 static void build_help(void)
 {
     s_help_scr = base_screen("HELP");
+    if (s_help_scr == NULL) {
+        return;
+    }
 
     for (int i = 0; i < 3; i++) {
         const int y = HELP_ROW_Y0 + i * ROW_PITCH;
         (void)row_bg(s_help_scr, y);
         const int y_c = y + ROW_H / 2;
         lv_obj_t *k = label(s_help_scr, HELP_KEYS[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_align(k, LV_ALIGN_TOP_LEFT, ROW_X + 10,
-                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        if (k != NULL) {
+            lv_obj_align(k, LV_ALIGN_TOP_LEFT, ROW_X + 10,
+                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        }
         lv_obj_t *v = label(s_help_scr, HELP_VALUES[i], &lv_font_montserrat_14, C_TEXT);
-        lv_obj_align(v, LV_ALIGN_TOP_RIGHT,
-                     -(lv_obj_get_width(s_help_scr) - (ROW_X + ROW_W - 10)),
-                     y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        if (v != NULL) {
+            lv_obj_align(v, LV_ALIGN_TOP_RIGHT,
+                         -(lv_obj_get_width(s_help_scr) - (ROW_X + ROW_W - 10)),
+                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
+        }
     }
 }
 
@@ -668,7 +809,9 @@ static void build_display_hint(lv_obj_t *scr)
     };
     for (int i = 0; i < 3; i++) {
         lv_obj_t *l = label(scr, lines[i], &lv_font_montserrat_14, C_MUTED);
-        lv_obj_set_pos(l, ROW_X + 10, DISPLAY_HINT_Y0 + i * 18);
+        if (l != NULL) {
+            lv_obj_set_pos(l, ROW_X + 10, DISPLAY_HINT_Y0 + i * 18);
+        }
     }
 }
 
@@ -1012,6 +1155,17 @@ static void dim_tick(uint32_t now_ms)
 static void refresh(lv_timer_t *t)
 {
     (void)t;
+    // 运行时采样一次(开机 5 秒后):此时 LVGL 任务已经渲染过首帧,max_used 里已经
+    // 包含了绘制任务/layer 的峰值。这正是崩溃现场那一类时刻的余量,所以"建页后"
+    // 和"运行中"两组数字要一起看。
+    //
+    // 用 lv_tick_get() 判断而不是数调用次数:refresh() 除了 500ms 定时器,还会被
+    // 滚动/激活/调亮度等路径直接调用,数次数会提前触发,量到的就不是"渲染之后"了。
+    static bool s_runtime_logged;
+    if (!s_runtime_logged && lv_tick_get() >= 5000) {
+        s_runtime_logged = true;
+        ui_mem_log("运行中");
+    }
     dim_tick(lv_tick_get());
     uint32_t color = C_TEXT;
     const char *st = state_text(&color);
@@ -1061,10 +1215,17 @@ static void refresh(lv_timer_t *t)
 
 void sb_ui_init(void)
 {
+    // 建页之前先记一次基线:池的总量/初始余量。之后每个阶段各记一次,这样
+    // "池够不够、是哪一页吃掉的"就能从日志直接读出来,不必再靠反汇编猜。
+    ui_mem_log("启动");
     build_home();
     build_pages();
     build_help();
     build_provision();
+    // 全部页面建完后的余量 —— 这是判断 CONFIG_LV_MEM_SIZE 是否够用的关键数字。
+    // 注意此时还没渲染过:绘制任务(layer/draw task)也从同一个池里出,所以余量
+    // 必须明显大于"最大连续块"能承受的一次渲染峰值。
+    ui_mem_log("建页后");
     // 背光按用户保存的亮度启动,而不是每次开机都 100%。空闲计时从"刚初始化"起算,
     // 于是开机后不会立刻把屏幕调暗。
     s_bright_live = sb_config_get()->brightness;
@@ -1072,8 +1233,14 @@ void sb_ui_init(void)
     bsp_display_backlight(s_bright_live);
     lv_timer_create(refresh, 500, NULL);
     refresh(NULL);   // 立即填一次,避免开屏是占位符
-    lv_screen_load(s_home_scr);
-    s_screen = SB_SCREEN_HOME;
+    // HOME 也可能因池耗尽而没建出来:此时没有任何可显示的屏幕,保留状态并明确
+    // 记一条错误,而不是把 NULL 交给 lv_screen_load。
+    if (s_home_scr != NULL) {
+        lv_screen_load(s_home_scr);
+        s_screen = SB_SCREEN_HOME;
+    } else {
+        ESP_LOGE(TAG, "HOME 未建成:LVGL 池在启动阶段即耗尽,请调大 CONFIG_LV_MEM_SIZE");
+    }
 }
 
 void sb_ui_show(sb_screen_t screen)
@@ -1086,18 +1253,35 @@ void sb_ui_show(sb_screen_t screen)
         }
         s_bright_adjust = false;
     }
-    s_screen = screen;
+    // 目标页可能因为池耗尽而没建出来(scr == NULL)。lv_screen_load() 里
+    // LV_CHECK_ARG(scr != NULL) 会直接 return,所以不会崩 —— 但**页面状态已经改了**,
+    // 于是 current_page()/refresh 会去操作一个空页。这里改成:先解析出目标屏幕,
+    // 只有真的存在才切换,否则退回 HOME 并保留原页面状态。
+    lv_obj_t *target = NULL;
+    sb_screen_t resolved = screen;
     switch (screen) {
-    case SB_SCREEN_MENU:    lv_screen_load(s_menu.scr); break;
-    case SB_SCREEN_NET:     lv_screen_load(s_net.scr); break;
-    case SB_SCREEN_REC:     lv_screen_load(s_rec.scr); break;
-    case SB_SCREEN_DEV:     lv_screen_load(s_dev.scr); break;
-    case SB_SCREEN_STORAGE: lv_screen_load(s_stor.scr); break;
-    case SB_SCREEN_DISPLAY: lv_screen_load(s_disp.scr); break;
-    case SB_SCREEN_HELP:    lv_screen_load(s_help_scr); break;
-    case SB_SCREEN_PROVISION: lv_screen_load(s_prov_scr); break;
-    default:                lv_screen_load(s_home_scr); s_screen = SB_SCREEN_HOME; break;
+    case SB_SCREEN_MENU:      target = s_menu.scr; break;
+    case SB_SCREEN_NET:       target = s_net.scr; break;
+    case SB_SCREEN_REC:       target = s_rec.scr; break;
+    case SB_SCREEN_DEV:       target = s_dev.scr; break;
+    case SB_SCREEN_STORAGE:   target = s_stor.scr; break;
+    case SB_SCREEN_DISPLAY:   target = s_disp.scr; break;
+    case SB_SCREEN_HELP:      target = s_help_scr; break;
+    case SB_SCREEN_PROVISION: target = s_prov_scr; break;
+    default:                  target = s_home_scr; resolved = SB_SCREEN_HOME; break;
     }
+    if (target == NULL) {
+        // 页面没建出来:退回 HOME。HOME 也空(池在启动时就耗尽)时保留状态,
+        // 由 sb_ui_init 的日志说明原因。
+        if (resolved != SB_SCREEN_HOME && s_home_scr != NULL) {
+            ESP_LOGW(TAG, "页面 %d 未建成(池耗尽),退回 HOME", (int)resolved);
+            lv_screen_load(s_home_scr);
+            s_screen = SB_SCREEN_HOME;
+        }
+        return;
+    }
+    lv_screen_load(target);
+    s_screen = resolved;
 }
 
 sb_screen_t sb_ui_current(void)

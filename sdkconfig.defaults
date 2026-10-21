@@ -36,7 +36,30 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 # 32.9 KB。加上 Help 页、列表滚动条、第 5 个菜单行、主页两行可选动作、Help 的三行
 # 说明,以及每个页面右上角的电量后为 39.6 KB。48 KB 留约 8 KB 余量,给后续新增
 # 页面/字体;不要调到 42 KB 以下。
+#
+# ⚠ 上面的数字是**建页**峰值,不含渲染:绘制任务(lv_draw_task_t + 各 draw_dsc)和
+# layer 也从同一个池里出,是在 LVGL 任务渲染时申请的。v0.7.6 新增 DISPLAY 页后,
+# 建页峰值越过了这 8 KB 余量,渲染阶段池被填满 → lv_malloc 返回 NULL →
+# lv_draw_add_task 未判空即写 new_task->area → "Store access fault" 复位循环。
+# 所以调这个值必须同时看 main/sb_ui.c 的 ui_mem_log() 实测("建页后"与"运行中"),
+# 不能只看建页峰值。
 CONFIG_LV_MEM_SIZE=49152
+
+# 池耗尽时,把"静默写 NULL 然后复位"变成一次可诊断的停机:LV_ASSERT_MALLOC 会在
+# lv_malloc 返回 NULL 处触发断言(LV_ASSERT_HANDLER 默认 while(1)),LV_USE_LOG 则让
+# LVGL 的断言/检查消息能打印出来 —— 此前两者都关着,所以那次失败在日志里完全无声。
+#
+# LV_LOG_PRINTF 是必需的:LVGL 9.6 默认既不 printf 也不装回调,只开 LV_USE_LOG
+# 的话所有消息都被静默丢弃(esp_lvgl_port 也没有注册 lv_log_register_print_cb)。
+# WARN 档只放行 WARN/ERROR/ASSERT,正是"池满/断言"这类消息,不会淹没正常日志。
+#
+# 效果:池真的用尽时,屏幕停在一帧未画完的状态并打印
+# "Assertion `p != NULL` failed. Out of memory" —— 可诊断的停机,而不是复位循环。
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_LOG_PRINTF=y
+CONFIG_LV_USE_ASSERT_MALLOC=y
+CONFIG_LV_USE_ASSERT_NULL=y
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
