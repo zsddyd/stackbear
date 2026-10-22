@@ -17,6 +17,7 @@ typedef enum {
     SB_NAV_STORAGE,     // STORAGE
     SB_NAV_DISPLAY,     // DISPLAY(亮度与空闲调暗)
     SB_NAV_HELP,        // HELP(整页滚动文字,没有光标)
+    SB_NAV_OTA,         // OTA(升级进度与结果;DEVICE 的 Check for update 进入)
     SB_NAV_PROVISION,   // 配网页(不参与常规导航层级)
     SB_NAV_PAGE_COUNT
 } sb_nav_page_t;

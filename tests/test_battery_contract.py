@@ -52,7 +52,7 @@ class BatteryOnEveryScreenTest(unittest.TestCase):
         # Each page either calls base_screen() directly or goes through
         # page_build(), which does. A new page that skipped it would silently
         # lose the battery, so require one of the two here.
-        for name in ["build_home", "build_help", "build_provision", "page_build"]:
+        for name in ["build_home", "build_help", "build_provision", "build_ota", "page_build"]:
             self.assertIn(
                 "base_screen(",
                 self.function_body(name),

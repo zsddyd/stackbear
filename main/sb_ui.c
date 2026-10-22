@@ -27,6 +27,9 @@
 
 static const char *TAG = "sb_ui";
 
+// OTA 页要用"当前运行槽"的 A/B 说法,而它定义在 DEVICE 页那一节(更靠后)。
+static const char *slot_letter(void);
+
 // ---------------------------------------------------------------------------
 // LVGL 池余量观测。
 //
@@ -173,7 +176,7 @@ static lv_obj_t *base_screen(sb_screen_t screen, const char *title)
 }
 
 // 一次更新所有页面的电量。最宽的内容是 "100%"(35px),右对齐到 x=228,所以它占
-// x=193..228;最长的标题 "STACKBEAR RECORDER" 到 x=185,两者不重叠。
+// x=193..228;标题里最长的 "SETUP MODE" 到 x≈95,两者不重叠。
 static void battery_refresh(void)
 {
     const int soc = bsp_battery_soc();
@@ -227,7 +230,6 @@ typedef struct {
     sb_screen_t screen;                   // 该页对应的屏幕枚举(建/删时用来登记与注销)
     const char *title;                    // 建页时的标题(懒加载重建要用)
     int item_count;                       // 条目数(懒加载重建要用)
-    void (*extra_build)(lv_obj_t *);      // 行槽之外还要画的东西(DISPLAY 的三行提示)
     int slots;                            // 实际创建的行槽数 = min(条目数, LIST_SLOTS)
     sb_scroll_t win;                      // 条目数 / 可视行数 / 光标 / 窗口起点
 } list_page_t;
@@ -379,7 +381,6 @@ static void page_config(list_page_t *p, sb_screen_t screen, sb_nav_page_t nav,
     p->title = title;
     p->item_names = names;
     p->item_count = count;
-    p->extra_build = NULL;
     p->slots = count < LIST_SLOTS ? count : LIST_SLOTS;
     p->win.count = count;
     p->win.visible = p->slots;
@@ -458,10 +459,6 @@ static void page_build(list_page_t *p)
     }
 
     bar_create(p->scr, C_CARD, C_SEL, BAR_ROW_H, &p->bar_track, &p->bar_thumb);
-    // 页面自带的额外静态装饰(DISPLAY 的三行提示)。放在行槽之后,避免被行底色盖住。
-    if (p->extra_build != NULL) {
-        p->extra_build(p->scr);
-    }
     page_render_window(p);
     bar_apply(p->bar_track, p->bar_thumb, BAR_ROW_H,
               p->win.scroll, p->win.count, p->slots);
@@ -562,7 +559,7 @@ static int s_home_cursor;
 
 static void build_home(void)
 {
-    s_home_scr = base_screen(SB_SCREEN_HOME, "STACKBEAR RECORDER");   // 右上角的电量由 base_screen 建
+    s_home_scr = base_screen(SB_SCREEN_HOME, "StackBear");   // 右上角的电量由 base_screen 建
     if (s_home_scr == NULL) {
         return;   // 池已耗尽:不建 HOME,由 sb_ui_init 的日志说明原因
     }
@@ -751,26 +748,180 @@ static void build_provision(void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Help:三行长按键说明,用与其它页面相同的"Key 左 + 值右"布局。
+// OTA:升级进度与结果。
+//
+// 为什么单独成页:这条信息原来挤在 DEVICE 页 `Check for update` 行的取值区里,而那个
+// Key 名字最长(到 x=149),把取值区压到只剩 63px(约 9 个字符)—— 而真实的失败原因有
+// 15~22 字符("unsupported url scheme"、"cannot reach server"、"sha256 mismatch"),
+// 全部被 ... 截断,用户看不到到底为什么失败。
+//
+// 单独一页就能用整屏宽度:状态用 20px 大字承担层级,详情整段换行显示,不再截断。
+// 这个页面按需构建(见 ensure_screen),所以它替换当前子页而不是叠加,池峰值不变。
+//
+// 页面只读:没有任何可停的行(见 sb_nav 的 SB_NAV_OTA 返回 0 行),长按 DOWN 回到
+// DEVICE —— 它是从那里进来的。
+// ---------------------------------------------------------------------------
+
+#define OTA_CARD_Y  44
+#define OTA_CARD_H  96
+#define OTA_INFO_Y0 (OTA_CARD_Y + OTA_CARD_H + 14)
+
+static lv_obj_t *s_ota_scr;
+static lv_obj_t *s_ota_state;
+static lv_obj_t *s_ota_detail;
+static lv_obj_t *s_ota_ver;
+static lv_obj_t *s_ota_slot;
+
+static void build_ota(void)
+{
+    s_ota_scr = base_screen(SB_SCREEN_OTA, "UPDATE");
+    if (s_ota_scr == NULL) {
+        return;
+    }
+
+    lv_obj_t *c = card(s_ota_scr, 12, OTA_CARD_Y, 216, OTA_CARD_H, C_CARD);
+    s_ota_state = label(c, "IDLE", &lv_font_montserrat_20, C_TEXT);
+    if (s_ota_state != NULL) {
+        lv_obj_align(s_ota_state, LV_ALIGN_TOP_LEFT, 14, 12);
+    }
+    // 详情整段换行:这是本页存在的理由 —— DEVICE 页那 63px 放不下的原因在这里全宽显示。
+    s_ota_detail = label(c, "", &lv_font_montserrat_14, C_MUTED);
+    if (s_ota_detail != NULL) {
+        lv_label_set_long_mode(s_ota_detail, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_ota_detail, 188);
+        lv_obj_align(s_ota_detail, LV_ALIGN_BOTTOM_LEFT, 14, -12);
+    }
+
+    // 两行上下文:当前版本与将要写入的槽。槽用 A/B 表示(与 DEVICE 页同一套说法)。
+    lv_obj_t *k1 = label(s_ota_scr, "Version", &lv_font_montserrat_14, C_MUTED);
+    if (k1 != NULL) {
+        lv_obj_set_pos(k1, ROW_X + 10, OTA_INFO_Y0);
+    }
+    s_ota_ver = label(s_ota_scr, "-", &lv_font_montserrat_14, C_TEXT);
+    if (s_ota_ver != NULL) {
+        lv_obj_align(s_ota_ver, LV_ALIGN_TOP_RIGHT,
+                     -(lv_obj_get_width(s_ota_scr) - (ROW_X + ROW_W - 10)), OTA_INFO_Y0);
+    }
+    lv_obj_t *k2 = label(s_ota_scr, "Running slot", &lv_font_montserrat_14, C_MUTED);
+    if (k2 != NULL) {
+        lv_obj_set_pos(k2, ROW_X + 10, OTA_INFO_Y0 + 24);
+    }
+    s_ota_slot = label(s_ota_scr, "-", &lv_font_montserrat_14, C_TEXT);
+    if (s_ota_slot != NULL) {
+        lv_obj_align(s_ota_slot, LV_ALIGN_TOP_RIGHT,
+                     -(lv_obj_get_width(s_ota_scr) - (ROW_X + ROW_W - 10)), OTA_INFO_Y0 + 24);
+    }
+
+    // 本页只读,退出方式写在屏幕上(和配网页同一条约定:凡是按键无效的页面都要写明)。
+    lv_obj_t *hint = label(s_ota_scr, "Hold DOWN: back", &lv_font_montserrat_14, C_MUTED);
+    if (hint != NULL) {
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+    }
+}
+
+// 状态词与配色。CHECKING/DOWNLOADING 用强调色(进行中),UP_TO_DATE 用绿色,
+// FAILED 用红色 —— 与 HOME 的状态卡同一套语义。
+static const char *ota_state_text(sb_ota_state_t st, uint32_t *color)
+{
+    switch (st) {
+    case SB_OTA_CHECKING:
+        *color = C_ACCENT;
+        return "CHECKING";
+    case SB_OTA_DOWNLOADING:
+        *color = C_ACCENT;
+        return "DOWNLOADING";
+    case SB_OTA_UP_TO_DATE:
+        *color = C_OK;
+        return "UP TO DATE";
+    case SB_OTA_FAILED:
+        *color = C_BAD;
+        return "FAILED";
+    default:
+        *color = C_TEXT;
+        return "IDLE";
+    }
+}
+
+static void refresh_ota(void)
+{
+    if (s_ota_scr == NULL) {
+        return;
+    }
+    const sb_ota_state_t st = sb_ota_state();
+    uint32_t color = C_TEXT;
+    const char *st_text = ota_state_text(st, &color);
+    if (s_ota_state != NULL) {
+        lv_label_set_text(s_ota_state, st_text);
+        lv_obj_set_style_text_color(s_ota_state, lv_color_hex(color), 0);
+    }
+    if (s_ota_detail != NULL) {
+        // 未开始时不写任何东西,避免"详情为空"看起来像坏了。
+        lv_label_set_text(s_ota_detail, st == SB_OTA_IDLE ? "" : sb_ota_message());
+    }
+    if (s_ota_ver != NULL) {
+        lv_label_set_text(s_ota_ver, sb_version_short());
+    }
+    if (s_ota_slot != NULL) {
+        lv_label_set_text(s_ota_slot, slot_letter());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Help:按键说明,用与其它页面相同的"Key 左 + 值右"布局,分两组。
 //
 // 与别的列表页的区别只有一点:这里没有光标(没有可执行的动作),所以不做高亮,
-// 三行都只是静态说明;进出的方式与子页一致(长按 DOWN 返回)。
+// 各行都只是静态说明;进出的方式与子页一致(长按 DOWN 返回)。
 //
-// 只写"光看屏幕猜不出来"的三条。早先这里按页面分组写了三十多行,把
+// 只写"光看屏幕猜不出来"的东西。早先这里按页面分组写了三十多行,把
 // "tap UP/DOWN = move cursor"、"tap OK = 选中"也说了一遍 —— 那些有高亮跟着动,
 // 看屏幕就能学会,写出来只是噪音。
 //
+// 为什么分两组:DISPLAY 页的亮度调节是**双模式**(OK 进入调节后 UP/DOWN 的含义改变),
+// 这是屏幕本身教不出来的第三件事。它原来以三行提示画在 DISPLAY 页行槽下方,现在
+// 统一收到这里 —— 每个页面只讲自己的数据,按键语义集中一处,不会再出现"同一件事在
+// 两个地方各写一遍、措辞还不一致"。
+//
+// 第二组的 `Hold DOWN` 与第一组同名但含义不同(第一组是"返回上一级",第二组是"结束
+// 亮度调节、留在本页")。靠分组标题限定作用域区分,不另造动词。
+//
 // 版式就是标准的"Key 左 + 值右",左右内缩各 10px,所以 Key 从 x=22 起、值右边缘
 // 在 x=218。最宽的 Key 是 "Hold DOWN"(88px),值就在 x=120..218 之间,可用 98px。
-// 三个取值分别是 80 / 84 / 90px(按真实字体量的),都能整段显示,不会被截断。
+// 五行(3 + 标题 + 2)加半行分组间距后,末行底边 242px,落在列表安全下沿 272px 内,
+// 所以不需要滚动。
 // ---------------------------------------------------------------------------
 
 #define HELP_ROW_Y0 38
+// 第二组标题与第一组之间空出半行,让"分组"在视觉上成立而不必加分隔线。
+#define HELP_GROUP_GAP 18
+#define HELP_GROUP2_Y0 (HELP_ROW_Y0 + 3 * ROW_PITCH + HELP_GROUP_GAP)
 
 static lv_obj_t *s_help_scr;
 
+// 第一组:全局长按手势。
 static const char *const HELP_KEYS[]   = {"Hold UP", "Hold DOWN", "Hold OK"};
 static const char *const HELP_VALUES[] = {"Start / stop", "Back a level", "Set up Wi-Fi"};
+
+// 第二组:DISPLAY 亮度调节(从 DISPLAY 页移来)。用户明确要求不列长按 DOWN ——
+// 第一组的 "Hold DOWN: Back a level" 已覆盖长按 DOWN 的一般语义。
+static const char *const HELP_DISP_KEYS[]   = {"UP / DOWN", "OK"};
+static const char *const HELP_DISP_VALUES[] = {"adjust", "confirm"};
+
+// 一行"Key 左 + 值右"。Key 用灰色、值用正文色,与其它页面一致。
+static void help_row(lv_obj_t *scr, int y, const char *key, const char *value)
+{
+    (void)row_bg(scr, y);
+    const int y_c = y + ROW_H / 2;
+    const int dy = -lv_font_get_line_height(&lv_font_montserrat_14) / 2;
+    lv_obj_t *k = label(scr, key, &lv_font_montserrat_14, C_MUTED);
+    if (k != NULL) {
+        lv_obj_align(k, LV_ALIGN_TOP_LEFT, ROW_X + 10, y_c + dy);
+    }
+    lv_obj_t *v = label(scr, value, &lv_font_montserrat_14, C_TEXT);
+    if (v != NULL) {
+        lv_obj_align(v, LV_ALIGN_TOP_RIGHT,
+                     -(lv_obj_get_width(scr) - (ROW_X + ROW_W - 10)), y_c + dy);
+    }
+}
 
 static void build_help(void)
 {
@@ -780,20 +931,18 @@ static void build_help(void)
     }
 
     for (int i = 0; i < 3; i++) {
-        const int y = HELP_ROW_Y0 + i * ROW_PITCH;
-        (void)row_bg(s_help_scr, y);
-        const int y_c = y + ROW_H / 2;
-        lv_obj_t *k = label(s_help_scr, HELP_KEYS[i], &lv_font_montserrat_14, C_MUTED);
-        if (k != NULL) {
-            lv_obj_align(k, LV_ALIGN_TOP_LEFT, ROW_X + 10,
-                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
-        }
-        lv_obj_t *v = label(s_help_scr, HELP_VALUES[i], &lv_font_montserrat_14, C_TEXT);
-        if (v != NULL) {
-            lv_obj_align(v, LV_ALIGN_TOP_RIGHT,
-                         -(lv_obj_get_width(s_help_scr) - (ROW_X + ROW_W - 10)),
-                         y_c - lv_font_get_line_height(&lv_font_montserrat_14) / 2);
-        }
+        help_row(s_help_scr, HELP_ROW_Y0 + i * ROW_PITCH, HELP_KEYS[i], HELP_VALUES[i]);
+    }
+
+    // 分组标题:无底色、灰色小字,只做作用域限定,不抢 Key/值那一列。
+    lv_obj_t *title = label(s_help_scr, "Brightness adjust", &lv_font_montserrat_14, C_ACCENT);
+    if (title != NULL) {
+        lv_obj_set_pos(title, ROW_X + 10, HELP_GROUP2_Y0);
+    }
+
+    for (int i = 0; i < 2; i++) {
+        help_row(s_help_scr, HELP_GROUP2_Y0 + 20 + i * ROW_PITCH,
+                 HELP_DISP_KEYS[i], HELP_DISP_VALUES[i]);
     }
 }
 
@@ -830,27 +979,6 @@ static void bright_commit(void)
 {
     if (s_bright_live != sb_config_get()->brightness) {
         (void)sb_config_set_brightness(s_bright_live);
-    }
-}
-
-// 行槽数只有 2,提示从第三行位置开始画。
-#define DISPLAY_HINT_Y0 (ROW_Y0 + 2 * ROW_PITCH + 6)
-
-// 三行提示都控制在 22 字符以内。取值区左起 x=22、右到 x=218(与 HELP 页同一版式),
-// 可用 196px;按 HELP 页实测的小写文本宽度("Start / stop" 12 字符 80px ≈
-// 6.7px/字符)折算,22 字符 ≈ 148px,余量充足。超宽会被屏幕右边缘裁掉,所以宁可写短句。
-static void build_display_hint(lv_obj_t *scr)
-{
-    static const char *lines[] = {
-        "OK: adjust brightness",
-        "UP / DOWN: change it",
-        "Hold DOWN: cancel",
-    };
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *l = label(scr, lines[i], &lv_font_montserrat_14, C_MUTED);
-        if (l != NULL) {
-            lv_obj_set_pos(l, ROW_X + 10, DISPLAY_HINT_Y0 + i * 18);
-        }
     }
 }
 
@@ -914,13 +1042,12 @@ static void build_pages(void)
     _Static_assert(sizeof(stor_names) / sizeof(stor_names[0]) ==
                        SB_NAV_STORAGE_ROWS, "storage row count must match sb_nav");
 
-    // DISPLAY:只有两行设置。列表页本身没有"提示区",而"OK 选中亮度后 UP/DOWN 变成
-    // 增减"这件事光看屏幕猜不出来,所以在行下方补两行静态提示(见 build_display_hint)。
+    // DISPLAY:只有两行设置。亮度行的双模式说明统一放在 HELP 页(见 build_help),
+    // 这一页只呈现数据。
     static const char *disp_names[] = {"Brightness", "Dim after"};
     page_config(&s_disp, SB_SCREEN_DISPLAY, SB_NAV_DISPLAY, "DISPLAY", disp_names, 2);
     _Static_assert(sizeof(disp_names) / sizeof(disp_names[0]) ==
                        SB_NAV_DISPLAY_ROWS, "display row count must match sb_nav");
-    s_disp.extra_build = build_display_hint;
 
 }
 
@@ -1244,6 +1371,7 @@ static void refresh(lv_timer_t *t)
     refresh_dev();
     refresh_stor();
     refresh_disp();
+    refresh_ota();   // OTA 页未建时自己早退,所以每 tick 调用是安全的
 
     // Branch 的跑马灯只在该行被选中时前进。refresh_dev() 已经按当前光标决定画什么
     // (选中=滚动,未选中=安全前缀),所以这里不需要额外判断。
@@ -1317,6 +1445,7 @@ void sb_ui_show(sb_screen_t screen)
     case SB_SCREEN_STORAGE:   target = s_stor.scr; break;
     case SB_SCREEN_DISPLAY:   target = s_disp.scr; break;
     case SB_SCREEN_HELP:      target = s_help_scr; break;
+    case SB_SCREEN_OTA:       target = s_ota_scr; break;
     case SB_SCREEN_PROVISION: target = s_prov_scr; break;
     default:                  target = s_home_scr; break;
     }
@@ -1383,6 +1512,7 @@ static bool screen_is_lazy(sb_screen_t s)
     case SB_SCREEN_STORAGE:
     case SB_SCREEN_DISPLAY:
     case SB_SCREEN_HELP:
+    case SB_SCREEN_OTA:
         return true;
     default:
         return false;
@@ -1397,6 +1527,16 @@ static void screen_forget(sb_screen_t s)
     }
     if (s == SB_SCREEN_HELP) {
         s_help_scr = NULL;
+        return;
+    }
+    if (s == SB_SCREEN_OTA) {
+        // OTA 页的四个标签都要注销:refresh_ota() 每 500ms 会写它们,漏一个就是
+        // 通过失效指针写已释放内存。
+        s_ota_scr = NULL;
+        s_ota_state = NULL;
+        s_ota_detail = NULL;
+        s_ota_ver = NULL;
+        s_ota_slot = NULL;
         return;
     }
     list_page_t *p = NULL;
@@ -1426,6 +1566,7 @@ static void screen_release(sb_screen_t s)
     lv_obj_t *scr = NULL;
     switch (s) {
     case SB_SCREEN_HELP: scr = s_help_scr; break;
+    case SB_SCREEN_OTA:  scr = s_ota_scr; break;
     case SB_SCREEN_NET:  scr = s_net.scr; break;
     case SB_SCREEN_REC:  scr = s_rec.scr; break;
     case SB_SCREEN_DEV:  scr = s_dev.scr; break;
@@ -1453,6 +1594,11 @@ static bool ensure_screen(sb_screen_t s)
             build_help();
         }
         return s_help_scr != NULL;
+    case SB_SCREEN_OTA:
+        if (s_ota_scr == NULL) {
+            build_ota();
+        }
+        return s_ota_scr != NULL;
     default:
         break;
     }
@@ -1492,6 +1638,7 @@ static sb_nav_page_t to_nav(sb_screen_t s)
     case SB_SCREEN_STORAGE: return SB_NAV_STORAGE;
     case SB_SCREEN_DISPLAY: return SB_NAV_DISPLAY;
     case SB_SCREEN_HELP:    return SB_NAV_HELP;
+    case SB_SCREEN_OTA:     return SB_NAV_OTA;
     case SB_SCREEN_PROVISION: return SB_NAV_PROVISION;
     default:                return SB_NAV_HOME;
     }
@@ -1507,6 +1654,7 @@ static sb_screen_t from_nav(sb_nav_page_t p)
     case SB_NAV_STORAGE: return SB_SCREEN_STORAGE;
     case SB_NAV_DISPLAY: return SB_SCREEN_DISPLAY;
     case SB_NAV_HELP:    return SB_SCREEN_HELP;
+    case SB_NAV_OTA:     return SB_SCREEN_OTA;
     case SB_NAV_PROVISION: return SB_SCREEN_PROVISION;
     default:             return SB_SCREEN_HOME;
     }
@@ -1577,8 +1725,14 @@ void sb_ui_activate(void)
         }
         break;
     case SB_SCREEN_DEV:
-        if (sb_nav_row_actionable(SB_NAV_DEV, s_dev.win.cursor) && !sb_ota_busy()) {
-            (void)sb_ota_check_start();
+        // Check for update:先切到 OTA 页,再启动检查 —— 页面本身就是"看结果"的地方,
+        // 而这一行的取值区只有 63px,装不下失败原因(见 build_ota 的说明)。
+        // 已经在检查/下载时不重复触发,只把页面显示出来看进度。
+        if (sb_nav_row_actionable(SB_NAV_DEV, s_dev.win.cursor)) {
+            if (!sb_ota_busy()) {
+                (void)sb_ota_check_start();
+            }
+            sb_ui_show(SB_SCREEN_OTA);
         }
         break;
     case SB_SCREEN_STORAGE: {

@@ -53,6 +53,8 @@ sb_nav_page_t sb_nav_parent(sb_nav_page_t page)
     case SB_NAV_DISPLAY:
     case SB_NAV_HELP:
         return SB_NAV_MENU;          // 子页上一层是菜单
+    case SB_NAV_OTA:
+        return SB_NAV_DEV;           // OTA 是 DEVICE 的下一层,返回时回到 DEVICE
     default:
         return page;                 // HOME / PROVISION 无处可退
     }

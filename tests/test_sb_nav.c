@@ -28,6 +28,10 @@ static void test_parent_chain(void)
     CHECK(sb_nav_parent(SB_NAV_DISPLAY) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_HELP) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_MENU) == SB_NAV_HOME, "");
+    // OTA 挂在 DEVICE 下(Check for update 进入),返回时回到 DEVICE 而不是菜单 ——
+    // 否则用户看完升级结果会被甩回菜单,还得重新进 DEVICE。
+    CHECK(sb_nav_parent(SB_NAV_OTA) == SB_NAV_DEV, "");
+    CHECK(sb_nav_parent(SB_NAV_DEV) == SB_NAV_MENU, "");
     // 主页与配网页无处可退(长按返回应停在原页,不能把用户甩到空屏)。
     CHECK(sb_nav_parent(SB_NAV_HOME) == SB_NAV_HOME, "");
     CHECK(sb_nav_parent(SB_NAV_PROVISION) == SB_NAV_PROVISION, "");
@@ -76,6 +80,7 @@ static void test_rows_and_clamp(void)
     CHECK(sb_nav_rows(SB_NAV_STORAGE) == 5, "");
     CHECK(sb_nav_rows(SB_NAV_DISPLAY) == 2, "");
     CHECK(sb_nav_rows(SB_NAV_HELP) == 0, "");        // 整页滚动文字,没有光标
+    CHECK(sb_nav_rows(SB_NAV_OTA) == 0, "");         // 纯状态页,没有可停的行
     CHECK(sb_nav_rows(SB_NAV_HOME) == 0, "");        // 非列表页
     CHECK(sb_nav_rows(SB_NAV_PROVISION) == 0, "");
 

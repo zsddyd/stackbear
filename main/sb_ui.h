@@ -32,6 +32,7 @@ typedef enum {
     SB_SCREEN_STORAGE,
     SB_SCREEN_DISPLAY,
     SB_SCREEN_HELP,
+    SB_SCREEN_OTA,
     SB_SCREEN_PROVISION,
     SB_SCREEN_COUNT,        // 屏幕数量(用于按屏幕索引的数组;本身不是一块屏幕)
 } sb_screen_t;
