@@ -239,6 +239,8 @@ static list_page_t s_menu, s_net, s_rec, s_dev, s_stor, s_disp;
 // 页面的按需构建/释放。定义在后面(sb_ui_show 附近),但 sb_ui_init 也要用。
 static bool ensure_screen(sb_screen_t s);
 static void screen_release_if_lazy(sb_screen_t s);
+// 高亮该停的 y。page_build() 要用它恢复位置,而它定义在下面(靠近移动逻辑)。
+static int32_t page_sel_y(const list_page_t *p);
 
 // ---------------------------------------------------------------------------
 // 滚动条指示。列表页与 Help 页共用:只在"内容确实超出可视区"时出现,否则整条
@@ -427,10 +429,15 @@ static void page_build(list_page_t *p)
     // 第 2 层:选中高亮。它在行底色之后创建,所以盖在选中行的底色上;几何与
     // 行底色完全一致(同样的 x/y/w/h 与圆角),视觉上等同于把那一行的底色换成
     // C_SEL,但它是一个可以整体缓动的独立对象。
+    //
+    // 位置必须取 page_sel_y(),不能写死 ROW_Y0:win.cursor 是**跨释放/重建保留**的
+    // (screen_forget() 只清指针,不动光标),所以重建时它可能不是 0。若这里画在第 0 行
+    // 而 cursor 在第 N 行,就会错位 —— 表现是"进页面后按 DOWN 没反应"(光标已在底部
+    // 被夹住,页面因此什么都不做),得先按 UP 把光标拉回来才正常。
     p->sel = lv_obj_create(p->scr);
     if (p->sel != NULL) {
         lv_obj_remove_flag(p->sel, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_pos(p->sel, ROW_X, ROW_Y0);
+        lv_obj_set_pos(p->sel, ROW_X, page_sel_y(p));
         lv_obj_set_size(p->sel, ROW_W, ROW_H);
         lv_obj_set_style_radius(p->sel, 10, 0);
         lv_obj_set_style_border_width(p->sel, 0, 0);
@@ -490,6 +497,16 @@ static void sel_set_y(void *obj, int32_t y)
     lv_obj_set_y((lv_obj_t *)obj, y);
 }
 
+// 高亮当前该停在哪个 y。**唯一**的计算来源 —— 建页时与移动后都用它,否则两处
+// 一旦算出不同结果,就会出现"光标在第 N 行、高亮却画在第 0 行"的错位(见 page_build
+// 里的说明)。
+//
+// 高亮停在**槽位**上,不是条目下标上:条目 item 在窗口里的槽是 item - scroll。
+static int32_t page_sel_y(const list_page_t *p)
+{
+    return ROW_Y0 + sb_scroll_slot(&p->win) * ROW_PITCH;
+}
+
 // 把选中高亮缓动到当前光标行。先删掉在跑的动画再从当前 y 重新滑:连按按键时
 // 不会堆积动画节点,也不会从起始行回跳(起点取的是动画此刻的位置)。
 static void page_slide_sel(list_page_t *p)
@@ -497,8 +514,7 @@ static void page_slide_sel(list_page_t *p)
     if (p->sel == NULL) {
         return;
     }
-    // 高亮停在**槽位**上,不是条目下标上:条目 item 在窗口里的槽是 item - scroll。
-    const int32_t target = ROW_Y0 + (p->win.cursor - p->win.scroll) * ROW_PITCH;
+    const int32_t target = page_sel_y(p);
     const int32_t from = lv_obj_get_y(p->sel);
     if (from == target) {
         return;

@@ -49,7 +49,7 @@ if(GIT_FOUND)
     string(STRIP "${SB_GIT_BRANCH}" SB_GIT_BRANCH)
 endif()
 string(TIMESTAMP SB_BUILD_TIME "%Y-%m-%d %H:%M UTC" UTC)
-set(SB_APP_VERSION "0.7.9")
+set(SB_APP_VERSION "0.7.10")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SB_GIT_COMMIT="${SB_GIT_COMMIT}"

@@ -89,6 +89,40 @@ int main(void)
     sb_scroll_follow(&s);
     assert(s.scroll == 0);
 
+    // 光标 -> 槽位:界面用它算高亮的 y。这里钉住"重建页面"那个真实缺陷 ——
+    // 光标跨释放/重建保留,所以重建时它可能停在最后一行;高亮必须落在**同一行**,
+    // 而不是被写死在第 0 槽。若两处算式漂移,表现就是"进页面后按 DOWN 没反应"
+    // (光标已在底部被夹住,页面因此什么都不做),得先按 UP 才恢复。
+    for (int count = 1; count <= 12; count++) {
+        for (int visible = 1; visible <= 12; visible++) {
+            sb_scroll_t t = { .count = count, .visible = visible, .cursor = 0, .scroll = 0 };
+            // 一直按 DOWN 到底,光标停在最后一项。
+            for (int i = 0; i < count + 2; i++) {
+                sb_scroll_move(&t, +1);
+            }
+            assert(t.cursor == count - 1);
+            // 重建后的高亮槽:必须是"光标可见区内的相对位置",且该行确实被显示。
+            const int slot = sb_scroll_slot(&t);
+            assert(slot == t.cursor - t.scroll);
+            const int v = (visible > 0 && visible < count) ? visible : count;
+            assert(slot >= 0 && slot < v);
+            // 关键回归:重建后光标仍在最后一项,再按 DOWN 应当仍是"到边界"而不是
+            // "莫名其妙没反应" —— 后者只会在高亮位置与光标不一致时被用户看见。
+            const int before = t.cursor;
+            sb_scroll_move(&t, +1);
+            assert(t.cursor == before);       // 已在底部:夹住
+            assert(sb_scroll_slot(&t) == slot);   // 高亮不跳回第 0 行
+        }
+    }
+
+    // 越界与空列表下 slot 也必须安全(界面直接拿它乘行高)。
+    sb_scroll_t z = { .count = 0, .visible = 5, .cursor = 0, .scroll = 0 };
+    assert(sb_scroll_slot(&z) == 0);
+    z = (sb_scroll_t){ .count = 5, .visible = 5, .cursor = 99, .scroll = 0 };
+    assert(sb_scroll_slot(&z) == 4);          // 夹到最后一项
+    z = (sb_scroll_t){ .count = 5, .visible = 5, .cursor = -3, .scroll = 0 };
+    assert(sb_scroll_slot(&z) == 0);          // 夹到第一项
+
     puts("test_sb_scroll: PASS");
     return 0;
 }

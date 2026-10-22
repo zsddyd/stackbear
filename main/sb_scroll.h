@@ -73,3 +73,30 @@ static inline int sb_scroll_move(sb_scroll_t *s, int delta)
     sb_scroll_follow(s);
     return s->cursor;
 }
+
+// 光标落在可视区的第几个槽(0 起)。界面用它换算高亮的 y 坐标。
+//
+// 单独做成函数而不是在两处各写一遍 cursor - scroll:界面里"建页时把高亮放到哪儿"
+// 与"移动后把高亮动画到哪儿"必须是**同一个**算式。两处各写一遍时曾经漂移过 ——
+// 建页时写死了第 0 个槽,而光标是跨页面释放/重建保留的,于是重建后高亮停在第一行、
+// 光标却在最后一行:再按 DOWN 因为光标已被夹在底部而毫无反应,得先按 UP 才正常。
+//
+// 越界的光标返回夹取后的槽,不会返回负数 —— 界面直接拿它算 y,不必再防一次。
+static inline int sb_scroll_slot(const sb_scroll_t *s)
+{
+    if (s->count <= 0) {
+        return 0;
+    }
+    int cursor = s->cursor;
+    if (cursor < 0) {
+        cursor = 0;
+    }
+    if (cursor >= s->count) {
+        cursor = s->count - 1;
+    }
+    int slot = cursor - s->scroll;
+    if (slot < 0) {
+        slot = 0;
+    }
+    return slot;
+}
