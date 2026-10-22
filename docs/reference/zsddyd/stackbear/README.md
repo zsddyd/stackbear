@@ -66,6 +66,13 @@ Every screen shows the battery percentage in its top-right corner. It used to be
 on HOME only, so entering a sub-page hid it; the readout is now created and
 registered by the shared screen builder, and the fuel gauge is read in one place.
 
+**Pages are built on demand** (finding 12 below): only HOME, SETTINGS and the
+provisioning screen stay resident, while the other sub-pages are created on entry
+and deleted on exit. The diagram above therefore describes the *navigation*
+relationship, not a set of always-live objects. It also means the battery
+registry has to be indexed by screen and unregistered on delete, or the refresh
+timer would write to a freed label.
+
 ### Backlight and idle dimming
 
 The screen is the largest single consumer on this board, and until v0.7.6 the
@@ -378,12 +385,34 @@ These were all found with the on-device console tool, in this order:
     artifact size, peak memory, thread and disk needs, compare them against the
     target host, and get the user's explicit confirmation before downloading,
     installing or loading anything on a shared or production machine.
+12. **A build-every-page-at-boot UI exhausted the LVGL static pool; the symptom
+    was a flickering white screen.** After the DISPLAY page landed the device
+    reset once a second, and what the user saw was a backlit white screen with
+    no frame ever drawn, flashing. The console decoded to `Store access fault`
+    with `MTVAL 0x8`, and disassembly placed it in `lv_draw_add_task()`: when the
+    pool is empty `lv_malloc_zeroed()` returns NULL, the return value is not
+    checked, and `new_task->area` is written - a store to `NULL+8`. Two flashes
+    sharpened the conclusion: the pool actually ran out while *constructing*
+    pages (the assert fired in `lv_obj_class_create_obj()` with class
+    `lv_label`), never reaching rendering. Nine screens held 168 objects at
+    roughly 290 B each - the object, its `spec_attr` and one local style - about
+    48.7 KB against a 48 KB pool. The history is that an earlier fix, which
+    switched to the byte-sized key, dropped the pool from the 64 KB that had
+    actually been in effect to 48 KB, and the new page pushed it over.
+    **Two lessons: (1)** the failure is silent - `LV_USE_LOG` and
+    `LV_ASSERT_MALLOC` were both off, and LVGL 9.6 discards every message unless
+    `LV_LOG_PRINTF` is set (`esp_lvgl_port` registers no callback either), so the
+    log said nothing at all; with both enabled, exhaustion becomes a diagnosable
+    halt. **(2)** the fix is to build pages on demand: keep only HOME / SETTINGS
+    / provisioning resident and build a sub-page on entry, delete it on exit,
+    which drops the resident peak from 168 objects to about 71. The measured pool
+    peak is now 22.4 KB of 46 KB (40% used). The pool size itself is unchanged.
 
 ## Tooling added
 
 | Tool | Purpose |
 | --- | --- |
-| `tools/usb_console.py` | Reads the ESP32 native USB-CDC console on Termux/Android, where there is no serial tty and minicom/pyserial cannot attach. Wraps the `termux-usb` descriptor with pyusb and streams the bulk-IN endpoint. |
+| `tools/usb_console.py` | Reads the ESP32 native USB-CDC console on Termux/Android, where there is no serial tty and minicom/pyserial cannot attach. Wraps the `termux-usb` descriptor with pyusb and streams the bulk-IN endpoint. `--reset` pulses a hardware reset before reading, for capturing the boot log: a device halted in an assert never re-emits it, so the reset has to come from the host. Note that a reset re-enumerates USB onto a new path, invalidating the old handle. |
 | `tools/adpcm_to_wav.py` | Decodes a stored session (`audio.adpcm`, or legacy `audio.opus`) into a playable WAV, and prints duration, peak and RMS so the recording can be checked without listening. |
 | `tools/make_ota_manifest.py` | Writes the OTA manifest (`version`, `sha256`, `size`, `commit`, `branch`, `url`) using the same version string the firmware builds, so a device recognises "already current". |
 
@@ -627,6 +656,10 @@ Device tests: PASS for the core path
               upload, per-session storage on the ECS, automatic transcription,
               and one real OTA update (check -> download -> sha256 -> slot switch
               -> reboot into the new version)
+              v0.7.8 (build pages on demand) is separately confirmed by a serial
+              flash: boot with no assert or panic, pool peak 22.4 KB of 46 KB
+              (40% used), a key press reaching the recorder, and the Settings
+              sub-pages entering and leaving cleanly
 Unverified:   decoded speech quality, long-run stability and battery life,
               reconnect after a network drop, the offline queue writing to flash
               on real hardware, and the LLM/Feishu stage
