@@ -28,7 +28,7 @@ static void test_parent_chain(void)
     CHECK(sb_nav_parent(SB_NAV_DISPLAY) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_HELP) == SB_NAV_MENU, "");
     CHECK(sb_nav_parent(SB_NAV_MENU) == SB_NAV_HOME, "");
-    // OTA 挂在 DEVICE 下(Check for update 进入),返回时回到 DEVICE 而不是菜单 ——
+    // OTA 挂在 DEVICE 下(Upgrade 行进入),返回时回到 DEVICE 而不是菜单 ——
     // 否则用户看完升级结果会被甩回菜单,还得重新进 DEVICE。
     CHECK(sb_nav_parent(SB_NAV_OTA) == SB_NAV_DEV, "");
     CHECK(sb_nav_parent(SB_NAV_DEV) == SB_NAV_MENU, "");
@@ -106,7 +106,7 @@ static void test_actionable_rows(void)
     for (int r = 0; r < sb_nav_rows(SB_NAV_REC); r++) {
         CHECK(!sb_nav_row_actionable(SB_NAV_REC, r), "recorder is read-only");;
     }
-    // DEVICE 只有最后一行(Check for update)可操作。
+    // DEVICE 只有最后一行(Upgrade)可操作。
     CHECK(!sb_nav_row_actionable(SB_NAV_DEV, 0), "");
     CHECK(!sb_nav_row_actionable(SB_NAV_DEV, 5), "");
     CHECK(sb_nav_row_actionable(SB_NAV_DEV, 6), "");

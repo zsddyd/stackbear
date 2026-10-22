@@ -8,7 +8,7 @@
 #define STORAGE_ROWS SB_NAV_STORAGE_ROWS
 #define DISPLAY_ROWS SB_NAV_DISPLAY_ROWS
 
-#define DEV_ROW_OTA     6   // "Check for update"
+#define DEV_ROW_OTA     6   // "Upgrade"(这一行进入 OTA 页)
 #define STORAGE_ROW_CACHE 0
 #define STORAGE_ROW_SIZE  1
 
@@ -82,7 +82,7 @@ bool sb_nav_row_actionable(sb_nav_page_t page, int row)
     case SB_NAV_MENU:
         return true;                                   // 每行都进子页
     case SB_NAV_DEV:
-        return row == DEV_ROW_OTA;                     // 只有 Check for update
+        return row == DEV_ROW_OTA;                     // 只有 Upgrade
     case SB_NAV_STORAGE:
         return row == STORAGE_ROW_CACHE || row == STORAGE_ROW_SIZE;
     case SB_NAV_DISPLAY:

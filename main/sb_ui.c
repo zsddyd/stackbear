@@ -766,10 +766,10 @@ static void build_provision(void)
 // ---------------------------------------------------------------------------
 // OTA:升级进度与结果。
 //
-// 为什么单独成页:这条信息原来挤在 DEVICE 页 `Check for update` 行的取值区里,而那个
-// Key 名字最长(到 x=149),把取值区压到只剩 63px(约 9 个字符)—— 而真实的失败原因有
-// 15~22 字符("unsupported url scheme"、"cannot reach server"、"sha256 mismatch"),
-// 全部被 ... 截断,用户看不到到底为什么失败。
+// 为什么单独成页:这条信息原来挤在 DEVICE 页最后一行(`Check for update`,现已改名
+// "Upgrade")的取值区里。那个 Key 的真实字宽是 123px,是全表最长的一个,把取值区压到
+// 只剩 67px —— 按实测,22 种 OTA 状态里只有 2 种能完整显示,连 "up to date"(74px)
+// 都会被 ... 截断。用户在 DEVICE 页看到的就是这种残句。
 //
 // 单独一页就能用整屏宽度:状态用 20px 大字承担层级,详情整段换行显示,不再截断。
 // 这个页面按需构建(见 ensure_screen),所以它替换当前子页而不是叠加,池峰值不变。
@@ -1047,8 +1047,13 @@ static void build_pages(void)
     _Static_assert(sizeof(rec_names) / sizeof(rec_names[0]) ==
                        SB_NAV_REC_ROWS, "rec row count must match sb_nav");
 
+    // 最后一行原来叫 "Check for update"。它比其它 Key 长得多(真实字宽 123px),
+    // 把取值区压到只剩 67px —— 连 "up to date"(74px)都放不下,22 种 OTA 状态里
+    // 只有 2 种能完整显示,用户看到的就是被 ... 截断的残句。改名 "Upgrade" 后
+    // 取值区有 127px,21 种状态里 14 种可完整显示;真正长的原因还是去 OTA 页看
+    // (那一页全宽换行,不受这一列限制)。
     static const char *dev_names[] = {"Device ID", "Firmware", "Slot", "Commit",
-                                      "Branch", "Built", "Check for update"};
+                                      "Branch", "Built", "Upgrade"};
     page_config(&s_dev, SB_SCREEN_DEV, SB_NAV_DEV, "DEVICE", dev_names, 7);
     _Static_assert(sizeof(dev_names) / sizeof(dev_names[0]) ==
                        SB_NAV_DEV_ROWS, "dev row count must match sb_nav");
@@ -1155,8 +1160,10 @@ static void refresh_rec(void)
 //   - Branch 未选中:取值不能盖到 "Branch" 这个名字上。它到 x=75,留 10px 空隙 →
 //     值从 x=85 起,可用 218-85 = 133px。实测 "feature/always-..." 是 118px,正好。
 #define DEV_VALUE_SAFE_PX 132
-//   - Check for update 行的取值:该 Key 最长(到 x=149,留 6px 空隙) → 218-155 = 63px。
-#define DEV_VALUE_ROW_PX  63
+//   - Upgrade 行的取值:该 Key 实测 62.6px,左起 x=22、留 6px 空隙 → 值从 x≈91 起,
+//     可用 218-91 = 127px。留 126 取整(实测的 lv_font_montserrat_14 adv_w,
+//     不是按字符数估的)。
+#define DEV_VALUE_ROW_PX  126
 
 static int text_px(const char *s, void *ctx)
 {
@@ -1220,8 +1227,8 @@ static void refresh_dev(void)
     // 可操作行用强调色(=超链接色),不写 "press OK":整行名字已经是蓝色,再写
     // 一次反而啰嗦。空闲时右边留空,只显示 OTA 的进度/结果。
     //
-    // 失败原因可能很长("checksum mismatch after download" 有 267px),按行的取值
-    // 宽度截断并加 ...,否则会盖到左边的 "Check for update" 上。
+    // 失败原因可能很长("unsupported url scheme" 有 176px),按行的取值宽度截断并加
+    // ...,否则会盖到左边的 "Upgrade" 上。完整的说明在 OTA 页(全宽换行)。
     const sb_ota_state_t st = sb_ota_state();
     switch (st) {
     case SB_OTA_CHECKING:
@@ -1741,8 +1748,8 @@ void sb_ui_activate(void)
         }
         break;
     case SB_SCREEN_DEV:
-        // Check for update:先切到 OTA 页,再启动检查 —— 页面本身就是"看结果"的地方,
-        // 而这一行的取值区只有 63px,装不下失败原因(见 build_ota 的说明)。
+        // Upgrade:先切到 OTA 页,再启动检查 —— 页面本身就是"看结果"的地方,而这一行的
+        // 取值区只有 126px,长原因仍会被截断(见 build_ota 的说明)。
         // 已经在检查/下载时不重复触发,只把页面显示出来看进度。
         if (sb_nav_row_actionable(SB_NAV_DEV, s_dev.win.cursor)) {
             if (!sb_ota_busy()) {

@@ -17,13 +17,13 @@
 #define SB_APP_VERSION "0.0.0"
 #endif
 
-// 纯版本号,界面 "Firmware" 行显示的就是它,如 "0.7.10"。
+// 纯版本号,界面 "Firmware" 行显示的就是它,如 "0.7.11"。
 const char *sb_version_number(void);
 
 // 8 位提交短号(与 sb_version_number() 拼成 OTA 身份串),如 "df4e58d1"。
 const char *sb_version_commit(void);
 
-// OTA 身份串 = "v<版本号>+<8 位提交短号>",如 "v0.7.10+df4e58d1"。
+// OTA 身份串 = "v<版本号>+<8 位提交短号>",如 "v0.7.11+df4e58d1"。
 // 这是设备与 OTA manifest **唯一**用来判断"是否已是最新"的字符串,所以它必须
 // 与 tools/make_ota_manifest.py 生成的完全一致(两边都用 git 的 --short=8)。
 const char *sb_version_short(void);
